@@ -93,17 +93,19 @@ else:
 
                         if self.tree.row_expanded(_Gtk.TreePath.new_from_indices(list(path))):
                             out.add(path)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"explorer expanded check failed: {e!r}")
                     try:
                         child = self.store.iter_children(current)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"explorer child iter failed: {e!r}")
                         child = None
                     if child is not None:
                         walk(child, path)
                     try:
                         current = self.store.iter_next(current)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"explorer next iter failed: {e!r}")
                         current = None
                     index += 1
 
@@ -122,8 +124,8 @@ else:
                 new_path = model.path if model else None
                 if old_path != new_path:
                     self._loaded = False
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"explorer model compare failed: {e!r}")
             self._model = model
             keep_expanded = self._expanded_paths() if self._loaded else set()
             self.store.clear()
@@ -146,13 +148,14 @@ else:
                 try:
                     if self.store.get_iter_first() is not None:
                         self.tree.expand_row(_Gtk.TreePath.new_from_indices([0]), False)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"explorer initial expand failed: {e!r}")
             else:
                 for path in sorted(keep_expanded):
                     try:
                         self.tree.expand_row(_Gtk.TreePath.new_from_indices(list(path)), False)
-                    except Exception:
+                    except Exception as e:
+                        logger.debug(f"explorer restore expand failed: {e!r}")
                         continue
 
         def _append_tree(self, parent, nodes) -> None:
@@ -185,8 +188,8 @@ else:
                     return
                 try:
                     self.emit("refresh")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"explorer refresh emit failed: {e!r}")
                 return
             elif kind == "folder":
                 if self.tree.row_expanded(path):

@@ -1,4 +1,11 @@
-"""Unit tests for dotnet CLI helpers and testing helpers."""
+"""Unit tests for dotnet CLI helpers and testing helpers.
+
+NOTE: this module holds real tests — it is NOT the shared-helper module.
+Shared helpers (_touch, _init_repo, GTK probes, Fake* fakes) live in
+tests/conftest.py; a few are re-exported below for backward compat.
+"""
+
+from conftest import FakeBuffer, FakeDoc, FakeWindow, _init_repo, _touch  # noqa: F401
 
 import os
 import sys

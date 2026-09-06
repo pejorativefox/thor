@@ -124,6 +124,29 @@ def _hide_all_panels(window) -> None:
     if not ok_side or not ok_bottom:
         _set_panes(window, side=None if ok_side else False, bottom=None if ok_bottom else False)
 
+def _show_all_panels(window) -> None:
+    logger.debug("panels: showing side + bottom")
+    ok_side = _set_pane_action(window, "ViewSidePane", True)
+    ok_bottom = _set_pane_action(window, "ViewBottomPane", True)
+    if not ok_side or not ok_bottom:
+        _set_panes(window, side=None if ok_side else True, bottom=None if ok_bottom else True)
+
+def _toggle_all_panels(window) -> None:
+    """Two-way focus-mode toggle: hide when anything is visible, else show."""
+    try:
+        side_vis = _pane_visible(window, "side")
+    except Exception as e:
+        logger.debug("toggle side visible failed: %r", e, exc_info=True)
+        side_vis = True
+    try:
+        bottom_vis = _pane_visible(window, "bottom")
+    except Exception as e:
+        logger.debug("toggle bottom visible failed: %r", e, exc_info=True)
+        bottom_vis = True
+    if side_vis or bottom_vis:
+        _hide_all_panels(window)
+    else:
+        _show_all_panels(window)
 def _pane_geometry(window, which: str):
     try:
         widget = _panel_widget(window, which)
@@ -215,8 +238,8 @@ def _toggle_side_panel(window) -> None:
 
 def _handle_global_key(window, keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
     if ctrl and not shift and not alt and keyname.lower() == "b":
-        logger.debug("key: Ctrl+B hide-panels")
-        _hide_all_panels(window)
+        logger.debug("key: Ctrl+B toggle-panels (two-way)")
+        _toggle_all_panels(window)
         return True
     if ctrl and not shift and not alt and keyname.lower() == "j":
         logger.debug("key: Ctrl+J toggle-bottom-panel")
@@ -310,6 +333,8 @@ class PanelHiderPlugin:  # type: ignore[no-redef]
     _delayed_pane_size = staticmethod(_delayed_pane_size)
     _toggle_pane = staticmethod(_toggle_pane)
     _hide_all_panels = staticmethod(_hide_all_panels)
+    _show_all_panels = staticmethod(_show_all_panels)
+    _toggle_all_panels = staticmethod(_toggle_all_panels)
     _toggle_bottom_panel = staticmethod(_toggle_bottom_panel)
     _toggle_side_panel = staticmethod(_toggle_side_panel)
     _handle_global_key = staticmethod(_handle_global_key)

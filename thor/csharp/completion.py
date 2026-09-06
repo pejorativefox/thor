@@ -99,8 +99,8 @@ else:
             self._anchor_view = None
             try:
                 self.connect("focus-in-event", self._on_focus_in)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion focus hook failed: {e!r}")
             self.set_default_size(420, 260)
             self.set_border_width(1)
             self._all_items: list[CompletionItem] = []
@@ -125,15 +125,15 @@ else:
             # Button clicks still accept even though keys stay in the editor.
             try:
                 self.tree.connect("button-press-event", self._on_button_press)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion button hook failed: {e!r}")
 
             scrolled = Gtk.ScrolledWindow()
             scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
             try:
                 scrolled.set_can_focus(False)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion scrolled focus failed: {e!r}")
             scrolled.add(self.tree)
             box.pack_start(scrolled, True, True, 0)
 
@@ -144,8 +144,8 @@ else:
             self.doc_label.set_ellipsize(3)  # END
             try:
                 self.doc_label.set_can_focus(False)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion doc focus failed: {e!r}")
             box.pack_start(self.doc_label, False, False, 0)
             self.tree.get_selection().connect("changed", self._on_selection_changed)
 
@@ -189,16 +189,16 @@ else:
         def _show_doc(self, item: CompletionItem | None) -> None:
             try:
                 self.doc_label.set_text((item.documentation or item.detail or "")[:500] if item else "")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion doc show failed: {e!r}")
 
         def _on_selection_changed(self, selection) -> None:
             try:
                 _model, tree_iter = selection.get_selected()
                 item = self.store.get_value(tree_iter, 2) if tree_iter else None
                 self._show_doc(item)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion selection failed: {e!r}")
 
         def _on_button_press(self, _tree, event) -> bool:
             try:
@@ -215,8 +215,8 @@ else:
                         if indices:
                             self._select_index(indices[0])
                     return True
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion button press failed: {e!r}")
             return False
 
         def selected_item(self) -> CompletionItem | None:
@@ -228,7 +228,8 @@ else:
                 if tree_iter is None:
                     return self._items[0] if self._items else None
                 return self.store.get_value(tree_iter, 2)
-            except Exception:
+            except Exception as e:
+                logger.debug(f"completion selected item failed: {e!r}")
                 return None
 
         def _select_index(self, index: int) -> None:
@@ -246,13 +247,13 @@ else:
                 path = Gtk.TreePath.new_from_indices([index])
                 self.tree.get_selection().select_path(path)
                 self.tree.scroll_to_cell(path, None, False, 0.0, 0.0)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion select scroll failed: {e!r}")
 
             try:
                 self._show_doc(self._items[index])
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion select doc failed: {e!r}")
 
         # -- placement ---------------------------------------------------
         def show_at_view(self, view, line0: int, char0: int) -> None:
@@ -275,8 +276,8 @@ else:
                 try:
                     _screen, px, py = Gdk.Display.get_default().get_pointer()[:3]
                     self.move(px + 10, py + 10)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"completion pointer fallback failed: {e!r}")
             # NOTE: never call present()/present_with_time() here:
             # gtk_window_present() explicitly moves keyboard focus to the popup,
             # which steals keystrokes from the editor so typing can't filter.
@@ -291,12 +292,12 @@ else:
             # robustness on real displays (xfwm, mutter) and Xvfb (no WM).
             try:
                 view.grab_focus()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion grab focus failed: {e!r}")
             try:
                 GLib.idle_add(self._refocus_editor)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion refocus schedule failed: {e!r}")
         def _refocus_editor(self) -> bool:
             """One-shot idle callback: hand focus back to the editor view."""
             try:
@@ -310,19 +311,19 @@ else:
                         toplevel = view.get_toplevel()
                         if isinstance(toplevel, Gtk.Window):
                             toplevel.present()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"completion toplevel present failed: {e!r}")
                     view.grab_focus()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion refocus failed: {e!r}")
             return False
 
         def _on_focus_in(self, _window, _event) -> bool:
             """Defensive: some WMs focus the popup anyway; bounce it back."""
             try:
                 GLib.idle_add(self._refocus_editor)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion focus-in refocus failed: {e!r}")
             return False
 
         # -- events ------------------------------------------------------
@@ -341,8 +342,8 @@ else:
             if not handled:
                 try:
                     GLib.idle_add(self._refocus_editor)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"completion key refocus failed: {e!r}")
             return handled
 
         # -- programmatic navigation (driven by view key forwarding) --
@@ -362,7 +363,8 @@ else:
                 index = (index + delta) % count
                 self._select_index(index)
                 return True
-            except Exception:
+            except Exception as e:
+                logger.debug(f"completion move selection failed: {e!r}")
                 return False
 
         def select_first(self) -> bool:
@@ -381,13 +383,14 @@ else:
             """Commit chars for the selected row (per-item LSP wins)."""
             try:
                 item = self.selected_item()
-            except Exception:
+            except Exception as e:
+                logger.debug(f"completion selected for commits failed: {e!r}")
                 item = None
             if item is not None:
                 try:
                     return frozenset(completion_commit_chars(item))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"completion commit chars failed: {e!r}")
             return COMMIT_CHARS
 
         def activate_selected(self) -> bool:
@@ -424,6 +427,6 @@ else:
         def dismiss(self) -> None:
             try:
                 self.hide()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion hide failed: {e!r}")
             self.emit("dismissed")

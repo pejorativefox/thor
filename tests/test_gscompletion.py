@@ -27,8 +27,7 @@ def _gui():
         if not ok:
             return None
         return Gtk, GtkSource
-    except Exception as e:
-        print(f"SKIP gscompletion gui tests (no display: {e})")
+    except Exception:
         return None
 
 

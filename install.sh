@@ -3,15 +3,28 @@
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STYLE_DIR="${THOR_STYLE_DIR:-$HOME/.local/share/thor/styles}"
-LANG_DIR="${THOR_LANG_DIR:-$HOME/.local/share/gtksourceview-4/language-specs}"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+STYLE_DIR="${THOR_STYLE_DIR:-$DATA_HOME/thor/styles}"
+# gtksourceview version assumption: specs target the GtkSourceView 4 API;
+# if Thor migrates to GtkSourceView 5, point this at gtksourceview-5/language-specs.
+LANG_DIR="${THOR_LANG_DIR:-$DATA_HOME/gtksourceview-4/language-specs}"
 BIN_DIR="${THOR_BIN_DIR:-$HOME/.local/bin}"
 
 mkdir -p "$STYLE_DIR"
-cp "$SRC_DIR"/styles/*.xml "$STYLE_DIR/"
+shopt -s nullglob
+style_files=("$SRC_DIR"/styles/*.xml)
+shopt -u nullglob
+if [ "${#style_files[@]}" -gt 0 ]; then
+    cp "${style_files[@]}" "$STYLE_DIR/"
+fi
 
 mkdir -p "$LANG_DIR"
-cp "$SRC_DIR"/lang/*.lang "$LANG_DIR/"
+shopt -s nullglob
+lang_files=("$SRC_DIR"/lang/*.lang)
+shopt -u nullglob
+if [ "${#lang_files[@]}" -gt 0 ]; then
+    cp "${lang_files[@]}" "$LANG_DIR/"
+fi
 
 mkdir -p "$BIN_DIR"
 for bin in thor-open thor-code thor-cli; do

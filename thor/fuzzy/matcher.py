@@ -166,8 +166,14 @@ def _score_terms(
         score, pos = hit
         total += score
         positions.extend(pos)
-    if len(terms) == 1 and haystack and terms[0].lower() == os.path.basename(haystack).lower():
-        total += SCORE_BASENAME_EXACT
+    if len(terms) == 1 and haystack:
+        # Basename-exact boost, smart-case: a lowercase query matches the
+        # basename case-insensitively, but an uppercase query must match
+        # exactly (mirrors the per-term smart-case above).
+        term = terms[0]
+        base = os.path.basename(haystack)
+        if term == base or (not any(ch.isupper() for ch in term) and term.lower() == base.lower()):
+            total += SCORE_BASENAME_EXACT
     return (total, sorted(positions))
 
 
@@ -238,22 +244,30 @@ class FuzzyIndex:
 
     def search(self, query: str, limit: int = 50) -> list[str]:
         """Rank paths by score; ties break shorter-then-alphabetical."""
+        return [path for path, _score, _pos in self.search_scored(query, limit=limit)]
+
+    def search_scored(
+        self, query: str, limit: int = 50
+    ) -> list[tuple[str, float, list[int]]]:
+        """Rank paths, returning ``(path, score, positions)`` per hit.
+
+        Runs the DP once per candidate; callers needing highlight
+        positions should use this instead of calling :func:`fuzzy_match`
+        again per row (which would double the DP cost per keystroke).
+        """
         terms = split_terms((query or "").strip())
         paths = [path for path, _, _ in self._entries]
         if not terms:
-            return paths[:limit]
+            return [(path, 0.0, []) for path in paths[:limit]] if limit > 0 else []
         if limit <= 0:
             return []
-        scored: list[tuple[float, int, str]] = []
+        scored: list[tuple[float, int, str, list[int]]] = []
         for path, hay_lower, bonus in self._entries:
             hit = self._score_entry(terms, path, hay_lower, bonus, path)
             if hit is not None:
-                scored.append((hit[0], len(path), path))
-        if len(scored) <= limit:
-            scored.sort(key=lambda item: (-item[0], item[1], item[2]))
-            return [path for _, _, path in scored]
-        top = heapq.nsmallest(limit, scored, key=lambda item: (-item[0], item[1], item[2]))
-        return [path for _, _, path in top]
+                scored.append((hit[0], len(path), path, hit[1]))
+        scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+        return [(path, score, pos) for score, _ln, path, pos in scored[:limit]]
 
 
 def fuzzy_find(query: str, paths: list[str], limit: int = 50) -> list[str]:

@@ -97,12 +97,12 @@ if Gtk is not None and GObject is not None:
                     else:
                         self._vpaned.set_position(h)
                 except Exception:
-                    pass
+                    logger.debug("initial paned positions failed", exc_info=True)
                 return False
             try:
                 GLib.idle_add(_set_initial_positions)
             except Exception:
-                pass
+                logger.debug("initial positions idle_add failed", exc_info=True)
             vbox.show_all()
             if self._side_panel.get_n_items() == 0:
                 self._side_panel.hide()
@@ -112,6 +112,10 @@ if Gtk is not None and GObject is not None:
             # Gtk.Paned/Box doesn't reclaim hidden child's size_request without explicit queue_resize (minimal test).
             def _sync_side(*_a):
                 try:
+                    if self._side_panel.get_visible() and self._side_panel.get_n_items() == 0:
+                        # Guard: never show an empty panel
+                        self._side_panel.hide()
+                        return
                     if not self._side_panel.get_visible() or self._side_panel.get_n_items() == 0:
                         self._side_panel.set_size_request(0, -1)
                         self._hpaned.set_position(0)
@@ -124,9 +128,13 @@ if Gtk is not None and GObject is not None:
                         self._hpaned.queue_resize()
                         self.queue_resize()
                 except Exception:
-                    pass
+                    logger.debug("side panel sync failed", exc_info=True)
             def _sync_bottom(*_a):
                 try:
+                    if self._bottom_panel.get_visible() and self._bottom_panel.get_n_items() == 0:
+                        # Guard: never show an empty panel
+                        self._bottom_panel.hide()
+                        return
                     if not self._bottom_panel.get_visible() or self._bottom_panel.get_n_items() == 0:
                         self._bottom_panel.set_size_request(-1, 0)
                         alloc = self.get_allocation()
@@ -142,23 +150,21 @@ if Gtk is not None and GObject is not None:
                         self._vpaned.queue_resize()
                         self.queue_resize()
                 except Exception:
-                    pass
+                    logger.debug("bottom panel sync failed", exc_info=True)
             try:
-                self._side_panel.connect("hide", _sync_side)
-                self._side_panel.connect("show", _sync_side)
+                # Single notify::visible each — hide/show fire it; ThorPanel's
+                # _sync_visibility -> hide/show covers n_items changes.
                 self._side_panel.connect("notify::visible", _sync_side)
-                self._bottom_panel.connect("hide", _sync_bottom)
-                self._bottom_panel.connect("show", _sync_bottom)
                 self._bottom_panel.connect("notify::visible", _sync_bottom)
-                # Also watch n_items via ThorPanel's _sync_visibility -> hide/show will fire
             except Exception:
-                pass
+                logger.debug("panel notify wiring failed", exc_info=True)
             # Track tabs
             self._tabs: list = []
+            self._css_provider = None
             # Key handling (panel-hider style, etc. plugins hook here too)
             self.connect("key-press-event", self._on_key_press)
             self.connect("delete-event", self._on_delete_event)
-            self.connect("destroy", lambda *_: None)
+            self.connect("destroy", self._on_destroy)
 
             # Apply atom-one-dark if available
             self._apply_color_scheme()
@@ -169,6 +175,31 @@ if Gtk is not None and GObject is not None:
                 self._side_panel.hide()
             if self._bottom_panel.get_n_items() == 0:
                 self._bottom_panel.hide()
+
+        def _on_destroy(self, *_args) -> None:
+            # Real teardown: project monitors, CssProvider. Plugin detaches
+            # beyond project use their own detach() via their owners.
+            try:
+                from .project import detach as _detach_project
+
+                try:
+                    _detach_project(self)
+                except Exception:
+                    logger.debug("destroy: project detach failed", exc_info=True)
+            except Exception:
+                logger.debug("destroy: project detach import failed", exc_info=True)
+            prov = getattr(self, "_css_provider", None)
+            if prov is not None:
+                try:
+                    Gtk.StyleContext.remove_provider_for_screen(Gdk.Screen.get_default(), prov)  # type: ignore[attr-defined]
+                except Exception:
+                    logger.debug("destroy: css provider removal failed", exc_info=True)
+                finally:
+                    try:
+                        self._css_provider = None
+                    except Exception:
+                        logger.debug("destroy: css provider clear failed", exc_info=True)
+
 
         def _build_menubar(self):
             # XFCE-native traditional menu bar (not HeaderBar/Gio app-menu).
@@ -215,9 +246,9 @@ if Gtk is not None and GObject is not None:
                             if m is not None:
                                 m.show()
                         except Exception:
-                            pass
+                            logger.debug("lazy find attach failed", exc_info=True)
                     except Exception:
-                        pass
+                        logger.debug("find show failed", exc_info=True)
 
                 def _find_next(*_a):
                     try:
@@ -225,7 +256,7 @@ if Gtk is not None and GObject is not None:
                         if mgr is not None:
                             mgr._go_next()  # type: ignore[attr-defined]
                     except Exception:
-                        pass
+                        logger.debug("find next failed", exc_info=True)
 
                 def _find_prev(*_a):
                     try:
@@ -233,7 +264,7 @@ if Gtk is not None and GObject is not None:
                         if mgr is not None:
                             mgr._go_prev()  # type: ignore[attr-defined]
                     except Exception:
-                        pass
+                        logger.debug("find prev failed", exc_info=True)
 
                 it = Gtk.MenuItem(label="Find…")
                 it.connect("activate", _find_show)
@@ -256,19 +287,19 @@ if Gtk is not None and GObject is not None:
                         vis = self._side_panel.get_visible()
                         if vis:
                             self._side_panel.hide()
-                        else:
+                        elif self._side_panel.get_n_items() != 0:
                             self._side_panel.show()
                     except Exception:
-                        pass
+                        logger.debug("toggle side panel failed", exc_info=True)
                 def _toggle_bottom(*_):
                     try:
                         vis = self._bottom_panel.get_visible()
                         if vis:
                             self._bottom_panel.hide()
-                        else:
+                        elif self._bottom_panel.get_n_items() != 0:
                             self._bottom_panel.show()
                     except Exception:
-                        pass
+                        logger.debug("toggle bottom panel failed", exc_info=True)
                 it = Gtk.MenuItem(label="Side Panel")
                 it.connect("activate", _toggle_side)
                 view_menu.append(it)
@@ -332,6 +363,7 @@ if Gtk is not None and GObject is not None:
             try:
                 return self._notebook.get_nth_page(n)  # ThorTab
             except Exception:
+                logger.debug("get_active_tab fallback", exc_info=True)
                 return self._tabs[n] if self._tabs else None
 
         def get_active_view(self):
@@ -341,6 +373,7 @@ if Gtk is not None and GObject is not None:
             try:
                 return tab.get_view()
             except Exception:
+                logger.debug("get_active_view failed", exc_info=True)
                 return None
 
         def get_active_document(self):
@@ -350,6 +383,7 @@ if Gtk is not None and GObject is not None:
             try:
                 return tab.get_document()
             except Exception:
+                logger.debug("get_active_document failed", exc_info=True)
                 return None
 
         def get_documents(self):
@@ -365,7 +399,7 @@ if Gtk is not None and GObject is not None:
                     if t.get_document().get_modified():
                         out.append(t.get_document())
                 except Exception:
-                    pass
+                    logger.debug("unsaved check failed", exc_info=True)
             return out
 
         def get_tab_from_location(self, location: Gio.File):  # type: ignore[name-defined]
@@ -375,6 +409,7 @@ if Gtk is not None and GObject is not None:
                     if loc is not None and loc.equal(location):
                         return t
                 except Exception:
+                    logger.debug("tab location compare failed", exc_info=True)
                     continue
             return None
 
@@ -406,7 +441,7 @@ if Gtk is not None and GObject is not None:
             try:
                 tab.load_location(location)
             except Exception:
-                pass
+                logger.debug("create_tab_from_location: load failed", exc_info=True)
             name = self._display_name(location)
             self._add_tab(tab, jump_to=jump_to, title=name)
             if line_pos >= 0:
@@ -422,9 +457,26 @@ if Gtk is not None and GObject is not None:
                     if tab in self._tabs:
                         self._tabs.remove(tab)
                     try:
+                        doc = tab.get_document()
+                        for attr in ("_thor_label_handler_id", "_modified_changed_id"):
+                            hid = getattr(tab, attr, None)
+                            if hid is not None:
+                                try:
+                                    if doc.handler_is_connected(hid):
+                                        doc.disconnect(hid)
+                                except Exception:
+                                    logger.debug("close_tab: disconnect %s failed", attr, exc_info=True)
+                                finally:
+                                    try:
+                                        setattr(tab, attr, None)
+                                    except Exception:
+                                        logger.debug("close_tab: clear %s failed", attr, exc_info=True)
+                    except Exception:
+                        logger.debug("close_tab: handler disconnect failed", exc_info=True)
+                    try:
                         tab.destroy()
                     except Exception:
-                        pass
+                        logger.debug("close_tab: destroy failed", exc_info=True)
                     self.emit("tab-removed", tab)
                     return
 
@@ -453,7 +505,7 @@ if Gtk is not None and GObject is not None:
                 if pref is not None:
                     tab.get_document().set_style_scheme(pref)  # type: ignore[attr-defined]
             except Exception:
-                pass
+                logger.debug("_add_tab: scheme failed", exc_info=True)
             # Build notebook label with close button
             label_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
             lbl = Gtk.Label(label=title)
@@ -465,11 +517,11 @@ if Gtk is not None and GObject is not None:
             # keep refs for updates
             tab._thor_label = lbl  # type: ignore[attr-defined]
             tab._thor_dot = dot  # type: ignore[attr-defined]
-            # Track modified signal to show dot
+            # Track modified signal to show dot (id kept for close_tab disconnect)
             try:
-                tab.get_document().connect("modified-changed", lambda *_: self._update_tab_label(tab))
+                tab._thor_label_handler_id = tab.get_document().connect("modified-changed", lambda *_: self._update_tab_label(tab))  # type: ignore[attr-defined]
             except Exception:
-                pass
+                logger.debug("_add_tab: modified-changed connect failed", exc_info=True)
             btn = Gtk.Button()
             btn.set_relief(Gtk.ReliefStyle.NONE)
             btn.set_focus_on_click(False)
@@ -477,6 +529,7 @@ if Gtk is not None and GObject is not None:
                 img = Gtk.Image.new_from_icon_name("window-close", Gtk.IconSize.MENU)
                 btn.add(img)
             except Exception:
+                logger.debug("_add_tab: close icon failed", exc_info=True)
                 btn.set_label("×")
             btn.connect("clicked", lambda *_: self.close_tab(tab))
             btn.set_tooltip_text("Close")
@@ -509,23 +562,33 @@ if Gtk is not None and GObject is not None:
                         ordered.append(t)
                 self._tabs = ordered
             except Exception:
-                pass
+                logger.debug("page reordered sync failed", exc_info=True)
             try:
                 self.emit("tabs-reordered")
             except Exception:
-                pass
+                logger.debug("tabs-reordered emit failed", exc_info=True)
 
         def _on_switch_page(self, nb, page, idx):
-            # idle so get_current_page reflects new page
+            # idle so get_current_page reflects new page; resolve the page
+            # inside the callback (captured idx may be stale after reorder/close)
             def _emit():
-                tab = nb.get_nth_page(idx)
-                self.emit("active-tab-changed", tab)
+                try:
+                    cur = nb.get_current_page()
+                    tab = nb.get_nth_page(cur)
+                except Exception:
+                    logger.debug("switch page resolve failed", exc_info=True)
+                    tab = None
+                try:
+                    self.emit("active-tab-changed", tab)
+                except Exception:
+                    logger.debug("switch page emit failed", exc_info=True)
                 self._update_header()
                 return False
 
             try:
                 GLib.idle_add(_emit)
             except Exception:
+                logger.debug("switch page idle_add failed", exc_info=True)
                 _emit()
 
         def _on_page_removed(self, *args):
@@ -543,7 +606,7 @@ if Gtk is not None and GObject is not None:
                     # dot already shows, keep label clean
                     pass
             except Exception:
-                pass
+                logger.debug("update tab label failed", exc_info=True)
             self._update_header()
 
         def _update_header(self) -> None:
@@ -559,6 +622,7 @@ if Gtk is not None and GObject is not None:
                         name = loc.get_basename() or "Untitled"
                         path = loc.get_path() or loc.get_uri()
                     except Exception:
+                        logger.debug("header location names failed", exc_info=True)
                         name = doc.get_short_name_for_display()
                         path = name
                 else:
@@ -569,12 +633,13 @@ if Gtk is not None and GObject is not None:
                 title = f"{name}{mod} — Thor" if path else f"{name}{mod}"
                 self.set_title(title)
             except Exception:
-                pass
+                logger.debug("update header failed", exc_info=True)
 
         def _display_name(self, loc: Gio.File) -> str:  # type: ignore[name-defined]
             try:
                 return loc.get_basename() or "Untitled"
             except Exception:
+                logger.debug("display name failed", exc_info=True)
                 return "Untitled"
 
         def _jump_to_line(self, tab, line: int) -> None:
@@ -586,7 +651,7 @@ if Gtk is not None and GObject is not None:
                 view.scroll_to_iter(it, 0.0, False, 0, 0)
                 view.grab_focus()
             except Exception:
-                pass
+                logger.debug("jump to line failed", exc_info=True)
 
         def _apply_color_scheme(self) -> None:
             # Thor ships atom-one-dark (styles/atom-one-dark.xml) which
@@ -609,17 +674,18 @@ if Gtk is not None and GObject is not None:
                         try:
                             tab.get_document().set_style_scheme(scheme)  # type: ignore[attr-defined]
                         except Exception:
-                            pass
+                            logger.debug("apply scheme failed", exc_info=True)
                     # Also set view gutter background via CSS fallback for any view
                     try:
                         css = b"textview, textview text, .view, GtkSourceView { background-color: #282C34; } .gutter, GtkSourceGutter { background-color: #21252B; }"
                         prov = Gtk.CssProvider()
                         prov.load_from_data(css)
                         Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)  # type: ignore[attr-defined]
+                        self._css_provider = prov
                     except Exception:
-                        pass
+                        logger.debug("css provider install failed", exc_info=True)
             except Exception:
-                pass
+                logger.debug("apply color scheme failed", exc_info=True)
         def save_tab(self, tab, save_as: bool = False) -> bool:
             if tab is None:
                 return False
@@ -627,6 +693,7 @@ if Gtk is not None and GObject is not None:
             loc = doc.get_location() if hasattr(doc, 'get_location') else None
             if loc is None or save_as:
                 # Save As — prompt
+                dlg = None
                 try:
                     dlg = Gtk.FileChooserDialog(title="Save File", transient_for=self, action=Gtk.FileChooserAction.SAVE)  # type: ignore[attr-defined]
                     dlg.set_do_overwrite_confirmation(True)
@@ -634,14 +701,12 @@ if Gtk is not None and GObject is not None:
                         try:
                             dlg.set_current_name(loc.get_basename() or "Untitled")  # type: ignore[union-attr]
                         except Exception:
-                            pass
+                            logger.debug("save dialog name failed", exc_info=True)
                     dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_SAVE, Gtk.ResponseType.OK)
                     resp = dlg.run()
                     if resp != Gtk.ResponseType.OK:
-                        dlg.destroy()
                         return False
                     filename = dlg.get_filename()
-                    dlg.destroy()
                     if not filename:
                         return False
                     loc = Gio.File.new_for_path(filename)  # type: ignore[union-attr]
@@ -656,35 +721,47 @@ if Gtk is not None and GObject is not None:
                         if lang:
                             doc.set_language(lang)  # type: ignore[attr-defined]
                     except Exception:
-                        pass
+                        logger.debug("save language guess failed", exc_info=True)
                     # update tab label
                     try:
                         lbl = getattr(tab, "_thor_label", None)
                         if lbl:
                             lbl.set_text(os.path.basename(filename))
                     except Exception:
-                        pass
+                        logger.debug("save label update failed", exc_info=True)
                 except Exception:
+                    logger.debug("save dialog failed", exc_info=True)
                     return False
-            # Emit SAVING -> NORMAL for plugins like autoreload/git-inline-diff
+                finally:
+                    if dlg is not None:
+                        try:
+                            dlg.destroy()
+                        except Exception:
+                            logger.debug("save dialog destroy failed", exc_info=True)
+            # Emit SAVING for plugins like autoreload/git-inline-diff; NORMAL only on success
             try:
-                old_state = tab.get_state() if hasattr(tab, 'get_state') else 0
                 tab.set_state(3)  # SAVING
                 self.emit("active-tab-state-changed", tab)
             except Exception:
-                pass
+                logger.debug("save SAVING emit failed", exc_info=True)
             ok = False
             try:
                 ok = bool(tab.save())  # type: ignore[attr-defined]
             except Exception:
+                logger.debug("tab.save failed", exc_info=True)
                 ok = False
-            try:
-                tab.set_state(0)  # NORMAL
-                self.emit("active-tab-state-changed", tab)
-                self._update_tab_label(tab)
-                self._update_header()
-            except Exception:
-                pass
+            if ok:
+                try:
+                    tab.set_state(0)  # NORMAL
+                    self.emit("active-tab-state-changed", tab)
+                    self._update_tab_label(tab)
+                    self._update_header()
+                except Exception:
+                    logger.debug("save NORMAL emit failed", exc_info=True)
+            else:
+                from .util import doc_path
+
+                logger.warning("save failed for %r; keeping dirty state", doc_path(doc))
             return ok
 
         def save_active_tab(self, save_as: bool = False) -> bool:
@@ -695,7 +772,7 @@ if Gtk is not None and GObject is not None:
                 tab.set_state(state)
                 self.emit("active-tab-state-changed", tab)
             except Exception:
-                pass
+                logger.debug("emit tab state failed", exc_info=True)
 
         def _on_key_press(self, widget, event) -> bool:
             # Thor-native save handling (XFCE traditional). Plugins also listen.
@@ -712,7 +789,7 @@ if Gtk is not None and GObject is not None:
                     self.save_active_tab(save_as=True)
                     return True
             except Exception:
-                pass
+                logger.debug("key press save failed", exc_info=True)
             # Let plugins / window handle other shortcuts; keep default propagation
             # Panel-hider: Ctrl+B etc will be handled by plugin signal handlers attached to window.
             # Do not swallow.
@@ -739,6 +816,7 @@ if Gtk is not None and GObject is not None:
                 dlg.destroy()
                 return resp != Gtk.ResponseType.OK
             except Exception:
+                logger.debug("delete event dialog failed", exc_info=True)
                 return False
 
 

@@ -158,13 +158,18 @@ def _clear_tags(doc) -> None:
     try:
         s, e = doc.get_bounds()  # type: ignore[attr-defined]
         doc.remove_tag_by_name(TAG_MATCH, s, e)  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("find clear match tags failed: %r", e, exc_info=True)
     try:
         s, e = doc.get_bounds()  # type: ignore[attr-defined]
         doc.remove_tag_by_name(TAG_CURRENT, s, e)  # type: ignore[attr-defined]
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("find clear current tag failed: %r", e, exc_info=True)
+
+
+#: Max highlighted hits per buffer. Tag application is O(hits) GTK work;
+#: beyond this the bar still counts all hits but only tags the first N.
+MAX_HIGHLIGHT_TAGS = 1000
 
 
 def _apply_highlights(doc, hits: list[tuple[int, int]], current_idx: int | None) -> None:
@@ -172,7 +177,9 @@ def _apply_highlights(doc, hits: list[tuple[int, int]], current_idx: int | None)
     _clear_tags(doc)
     if not hits:
         return
-    for idx, (s, e) in enumerate(hits):
+    if len(hits) > MAX_HIGHLIGHT_TAGS:
+        logger.debug("find: capping %d hits to %d tags", len(hits), MAX_HIGHLIGHT_TAGS)
+    for idx, (s, e) in enumerate(hits[:MAX_HIGHLIGHT_TAGS]):
         try:
             si = doc.get_iter_at_offset(s)  # type: ignore[attr-defined]
             ei = doc.get_iter_at_offset(e)  # type: ignore[attr-defined]
@@ -180,7 +187,8 @@ def _apply_highlights(doc, hits: list[tuple[int, int]], current_idx: int | None)
                 doc.apply_tag_by_name(TAG_CURRENT, si, ei)  # type: ignore[attr-defined]
             else:
                 doc.apply_tag_by_name(TAG_MATCH, si, ei)  # type: ignore[attr-defined]
-        except Exception:
+        except Exception as e:
+            logger.debug("find highlight #%d failed: %r", idx, e, exc_info=True)
             continue
 
 
@@ -414,20 +422,29 @@ class FindManager:
     # -- internals ------------------------------------------------------
 
     def _track_buffer(self) -> None:
+        old_doc = self._current_doc
         # disconnect old
-        if self._buffer_handler and self._current_doc:
+        if self._buffer_handler and old_doc is not None:
             try:
-                self._current_doc.disconnect(self._buffer_handler)  # type: ignore[attr-defined]
-            except Exception:
-                pass
+                old_doc.disconnect(self._buffer_handler)  # type: ignore[attr-defined]
+            except Exception as e:
+                logger.debug("find buffer disconnect failed: %r", e, exc_info=True)
             self._buffer_handler = None
         _, doc, _ = _get_active_doc_view(self.window)
+        # Drop highlights left on the previous buffer so a doc switch never
+        # leaves stale amber tags behind in a background document.
+        if old_doc is not None and old_doc is not doc:
+            try:
+                _clear_tags(old_doc)
+            except Exception as e:
+                logger.debug("find stale clear failed: %r", e, exc_info=True)
         self._current_doc = doc
         if doc is None:
             return
         try:
             self._buffer_handler = doc.connect("changed", lambda *_: self._on_buffer_changed())
-        except Exception:
+        except Exception as e:
+            logger.debug("find buffer watch failed: %r", e, exc_info=True)
             self._buffer_handler = None
 
     def _on_active_tab_changed(self) -> None:

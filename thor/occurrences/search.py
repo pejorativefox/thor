@@ -17,15 +17,22 @@ def _is_word_char(ch: str) -> bool:
 def word_at(text: str, offset: int) -> tuple[str, int, int] | None:
     """Return ``(word, start, end)`` for the word containing ``offset``.
 
-    ``offset`` is clamped into ``[0, len(text))``.  Returns ``None`` when
-    the char under the cursor is not a word char or the word is shorter
-    than ``MIN_WORD_LEN``.
+    ``offset`` is clamped into ``[0, len(text) - 1]`` (EOF maps onto the
+    last char, matching cursor-after-word behaviour). Returns ``None``
+    when the char under the cursor is not a word char or the word is
+    shorter than ``MIN_WORD_LEN``.
     """
     if not text:
+        return None
+    try:
+        offset = int(offset)
+    except Exception:
         return None
     if offset < 0:
         offset = 0
     elif offset >= len(text):
+        # EOF (offset == len) or beyond: step onto the last char; an empty
+        # text already returned above so len-1 >= 0 here.
         offset = len(text) - 1
     if not _is_word_char(text[offset]):
         return None

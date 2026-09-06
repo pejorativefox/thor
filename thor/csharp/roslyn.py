@@ -91,6 +91,8 @@ class RoslynManager:
         self.workspace_root: Optional[str] = None
         self.server_argv: Optional[List[str]] = None
         self.stderr_log_path: Optional[str] = None
+        self._log_dir: Optional[str] = None
+        self._log_level: str = "Information"
         self.state = "stopped"
         self.last_error = ""
         self.capabilities: dict = {}
@@ -112,6 +114,8 @@ class RoslynManager:
             self.solution_path = solution_path
             self.workspace_root = workspace_root
             self.stderr_log_path = stderr_log_path
+            self._log_dir = log_dir
+            self._log_level = log_level
             self.last_error = ""
             argv = list(server_argv) + ["--stdio", "--logLevel", log_level]
             if log_dir:
@@ -127,11 +131,11 @@ class RoslynManager:
                     on_exit=self._on_transport_exit,
                     stderr_log_path=stderr_log_path,
                 )
-                self.transport.start()
             except FileNotFoundError:
-                logger.debug(f"RoslynManager: server binary missing: {argv[0]!r}")
+                logger.warning(f"RoslynManager: server binary missing: {argv[0]!r}")
                 self.transport = None
                 self.state = "error"
+                self.last_error = f"Roslyn language server not found: {argv[0]!r}"
                 return False
             self.state = "starting"
             self._send_initialize()
@@ -174,7 +178,7 @@ class RoslynManager:
             lines.append("Use C# Solution -> Refresh to restart it.")
             self.last_error = "\n".join(lines)
             message = self.last_error
-        logger.debug(message.splitlines()[0])
+        logger.warning(message.splitlines()[0] if message else "Roslyn server exited")
         if self.on_error is not None:
             cb = self.on_error
             self.ui_dispatch(lambda: cb(message))
@@ -183,27 +187,18 @@ class RoslynManager:
         with self._lock:
             argv = list(self.server_argv or [])
             sln, root = self.solution_path, self.workspace_root or ""
+            log_dir, log_level = self._log_dir, self._log_level
+            stderr_log_path = self.stderr_log_path
         self.stop()
         if not argv:
             return False
-        base = [a for a in argv if a not in ("--stdio", "--autoLoadProjects")]
-        # Strip flag values we added.
-        cleaned: List[str] = []
-        skip_next = False
-        for i, arg in enumerate(base):
-            if skip_next:
-                skip_next = False
-                continue
-            if arg in ("--logLevel", "--extensionLogDirectory") and i + 1 < len(base):
-                cleaned.append(arg)
-                cleaned.append(base[i + 1])
-                skip_next = True
-                continue
-            if arg.startswith("--extensionLogDirectory="):
-                continue
-            cleaned.append(arg)
-        binary = cleaned[:1]
-        return self.start(sln, root, binary or argv[:1])
+        # server_argv[0] is the binary; start() rebuilds the flags it owns
+        # (--stdio/--logLevel/--extensionLogDirectory/--autoLoadProjects)
+        # from the persisted settings above.
+        return self.start(
+            sln, root, argv[:1],
+            log_dir=log_dir, log_level=log_level, stderr_log_path=stderr_log_path,
+        )
 
     # -- LSP messages --------------------------------------------------
     def _send_initialize(self) -> None:
@@ -252,14 +247,31 @@ class RoslynManager:
         )
 
     def _on_initialize_result(self, message: dict) -> None:
+        error = message.get("error")
         result = message.get("result") or {}
-        self.capabilities = result.get("capabilities", {})
+        capabilities = result.get("capabilities")
+        if error is not None or not isinstance(capabilities, dict):
+            detail = error if error is not None else "missing capabilities"
+            text = f"Roslyn language server failed to initialize: {detail}"
+            with self._lock:
+                self.state = "error"
+                self.last_error = text
+            logger.warning(text)
+            if self.on_error is not None:
+                cb = self.on_error
+                self.ui_dispatch(lambda: cb(text))
+            return
+        with self._lock:
+            self.capabilities = capabilities
+            transport = self.transport
+            sln = self.solution_path
         logger.debug("Roslyn initialize OK; sending initialized + solution/open")
-        assert self.transport is not None
-        self.transport.send_notification("initialized", {})
-        if self.solution_path:
-            self.transport.send_notification(
-                ROSSLYN_SOLUTION_OPEN, {"solution": file_uri(self.solution_path)}
+        if transport is None:
+            return
+        transport.send_notification("initialized", {})
+        if sln:
+            transport.send_notification(
+                ROSSLYN_SOLUTION_OPEN, {"solution": file_uri(sln)}
             )
         with self._lock:
             self.state = "ready"
@@ -272,6 +284,7 @@ class RoslynManager:
             try:
                 request_id = int(message["id"])
             except (TypeError, ValueError):
+                logger.debug(f"roslyn: dropping response with bad id: {message.get('id')!r}")
                 return
             callback = self.pending.pop(request_id)
             if callback is not None:
@@ -296,12 +309,14 @@ class RoslynManager:
     def did_open(self, path: str, language_id: str, version: int, text: str) -> None:
         if not path.endswith(".cs"):
             return
-        if self.transport is None:
-            return
         uri = file_uri(path)
-        self.open_docs[uri] = version
-        self._doc_text[uri] = text
-        self.transport.send_notification(
+        with self._lock:
+            transport = self.transport
+            if transport is None:
+                return
+            self.open_docs[uri] = version
+            self._doc_text[uri] = text
+        transport.send_notification(
             "textDocument/didOpen",
             {"textDocument": {"uri": uri, "languageId": language_id, "version": version, "text": text}},
         )
@@ -309,21 +324,23 @@ class RoslynManager:
     def did_change(self, path: str, version: int, text: str) -> None:
         if not path.endswith(".cs"):
             return
-        if self.transport is None:
-            return
         uri = file_uri(path)
-        # Full-document sync MUST carry a range: some Roslyn versions
-        # NullReference-crash on rangeless changes (RangeToTextSpan).
-        # The range spans the previously sent text (what is being replaced).
-        previous = self._doc_text.get(uri, text)
+        with self._lock:
+            transport = self.transport
+            if transport is None:
+                return
+            # Full-document sync MUST carry a range: some Roslyn versions
+            # NullReference-crash on rangeless changes (RangeToTextSpan).
+            # The range spans the previously sent text (what is being replaced).
+            previous = self._doc_text.get(uri, text)
+            self.open_docs[uri] = version
+            self._doc_text[uri] = text
         change = {
             "range": full_document_range(previous),
             "rangeLength": len(previous),
             "text": text,
         }
-        self.open_docs[uri] = version
-        self._doc_text[uri] = text
-        self.transport.send_notification(
+        transport.send_notification(
             "textDocument/didChange",
             {
                 "textDocument": {"uri": uri, "version": version},
@@ -332,36 +349,43 @@ class RoslynManager:
         )
 
     def did_close(self, path: str) -> None:
-        if self.transport is None:
-            return
         if not path.endswith(".cs"):
             return
         uri = file_uri(path)
-        # Never-opened URIs MUST NOT send didClose: this Roslyn version
-        # treats it as fatal (Contract.Fail -> SIGABRT, exit -6) instead
-        # of a no-op, killing the server for every open tab.
-        if uri not in self.open_docs and uri not in self._doc_text:
-            return
-        self.open_docs.pop(uri, None)
-        self._doc_text.pop(uri, None)
-        self.transport.send_notification("textDocument/didClose", {"textDocument": {"uri": uri}})
+        with self._lock:
+            transport = self.transport
+            if transport is None:
+                return
+            # Never-opened URIs MUST NOT send didClose: this Roslyn version
+            # treats it as fatal (Contract.Fail -> SIGABRT, exit -6) instead
+            # of a no-op, killing the server for every open tab.
+            if uri not in self.open_docs and uri not in self._doc_text:
+                return
+            self.open_docs.pop(uri, None)
+            self._doc_text.pop(uri, None)
+        transport.send_notification("textDocument/didClose", {"textDocument": {"uri": uri}})
 
     def did_save(self, path: str, text: str) -> None:
-        if self.transport is None:
-            return
         if not path.endswith(".cs"):
             return
         uri = file_uri(path)
-        self.transport.send_notification(
+        with self._lock:
+            transport = self.transport
+            if transport is None:
+                return
+        transport.send_notification(
             "textDocument/didSave", {"textDocument": {"uri": uri}, "text": text}
         )
 
+
     # -- requests (completion/hover/definition/references/actions/format)
     def request(self, method: str, params: dict, callback) -> Optional[int]:
-        if self.transport is None:
-            logger.debug(f"RoslynManager.request {method}: server not running")
-            return None
-        request_id = self.transport.next_id()
+        with self._lock:
+            transport = self.transport
+            if transport is None:
+                logger.debug(f"RoslynManager.request {method}: server not running")
+                return None
+        request_id = transport.next_id()
         self.pending.add(request_id, callback)
-        self.transport.send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        transport.send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
         return request_id

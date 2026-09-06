@@ -6,6 +6,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 import os
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -66,6 +67,7 @@ def _pick_icon(candidates: tuple[str, ...]) -> str:
                 if theme.has_icon(name):
                     return name
             except Exception:
+                logger.debug(f"icon probe failed for {name}", exc_info=True)
                 continue
     return candidates[0]
 
@@ -99,7 +101,7 @@ def _cache_dir() -> str:
         try:
             return os.path.join(GLib.get_user_cache_dir(), "thor", "project-mode")
         except Exception:
-            pass
+            logger.debug("user cache dir lookup failed", exc_info=True)
     return os.path.join(os.path.expanduser("~/.cache"), "thor", "project-mode")
 
 def pending_root_path(base: str | None = None) -> str:
@@ -125,33 +127,50 @@ def take_pending_root(
 ) -> str | None:
     """Read and consume the `thor-code` handoff (fresh entries only).
 
-    Always unlinks the file when present so one launch never affects a
-    later window. Returns the abspath, or None when missing/stale/empty.
+    Stale/empty handoffs are consumed (deleted) so one launch never
+    affects a later window. A handoff naming a non-directory is invalid
+    intent (transient mount, typo) — it is left in place, never
+    destroyed, so a later activation can still honor it. Returns the
+    abspath, or None when missing/stale/empty/not-a-directory.
     """
     target = path or pending_root_path()
     try:
         mtime = os.path.getmtime(target)
     except OSError:
+        logger.debug(f"pending handoff missing: {target}", exc_info=True)
         return None
     try:
         with open(target, encoding="utf-8") as f:
             content = f.read().strip()
     except OSError:
-        content = ""
-    try:
-        os.unlink(target)
-    except OSError as e:
-        logger.debug(f"pending consume failed: {e!r}")
+        logger.debug(f"pending handoff unreadable: {target}", exc_info=True)
+        return None
     moment = time.time() if now is None else now
     if moment - mtime > max_age_s or not content:
+        try:
+            os.unlink(target)
+        except OSError:
+            logger.debug(f"pending consume failed: {target}", exc_info=True)
         return None
-    return os.path.abspath(content)
+    try:
+        validated = os.path.abspath(content)
+    except Exception:
+        logger.debug(f"pending handoff invalid content: {content!r}", exc_info=True)
+        return None
+    if not os.path.isdir(validated):
+        return None
+    try:
+        os.unlink(target)
+    except OSError:
+        logger.debug(f"pending consume failed: {target}", exc_info=True)
+    return validated
 
 def has_project_markers(folder: str) -> bool:
     """True when folder's top level looks like a project (no recursion)."""
     try:
         entries = os.scandir(folder)
     except OSError:
+        logger.debug(f"project markers scan failed for {folder}", exc_info=True)
         return False
     with entries:
         for entry in entries:
@@ -170,6 +189,7 @@ def is_unsafe_root(folder: str) -> bool:
         home = os.path.realpath(os.path.expanduser("~"))
         return real == home or real == os.path.dirname(home) or real == "/"
     except Exception:
+        logger.debug(f"unsafe-root check failed for {folder}", exc_info=True)
         return True
 
 def resolve_startup_root(
@@ -232,44 +252,7 @@ _GIT_RELEVANT_FILES = frozenset({"HEAD", "index", "packed-refs", "ORIG_HEAD", "F
 
 _GIT_NOISE_SUFFIXES = (".lock", ".tmp", ".swp", "~")
 
-try:
-    from thor.util import is_save_completed, tab_state_name
-except Exception:  # headless / import cycle — fallback inline
-    def tab_state_name(state) -> str:  # type: ignore[no-redef]
-        """Normalized TabState name for a raw ``get_state()`` value."""
-        try:
-            name = getattr(state, "value_name", None)
-            if isinstance(name, str) and name:
-                return name
-        except Exception:
-            pass
-        try:
-            nick = getattr(state, "value_nick", None)
-            if isinstance(nick, str) and nick:
-                return nick
-        except Exception:
-            pass
-        try:
-            num = int(state)  # type: ignore[arg-type]
-        except Exception:
-            num = None
-        if num == 0:
-            return "THOR_TAB_STATE_NORMAL"
-        if num == 3:
-            return "THOR_TAB_STATE_SAVING"
-        try:
-            return str(state)
-        except Exception:
-            return ""
-
-    def is_save_completed(previous, current) -> bool:  # type: ignore[no-redef]
-        """True on a SAVING -> NORMAL tab-state transition (save done)."""
-        try:
-            prev = tab_state_name(previous).upper()
-            cur = tab_state_name(current).upper()
-        except Exception:
-            return False
-        return "SAVING" in prev and "ERROR" not in prev and cur.endswith("NORMAL")
+from thor.util import is_save_completed, tab_state_name
 
 def _rel_within(path: str, base: str) -> str | None:
     """Relative path of `path` under `base`, or None when outside."""
@@ -277,10 +260,12 @@ def _rel_within(path: str, base: str) -> str | None:
         abs_path = os.path.abspath(path)
         abs_base = os.path.abspath(base)
     except Exception:
+        logger.debug(f"rel-within failed for {path!r} under {base!r}", exc_info=True)
         return None
     try:
         rel = os.path.relpath(abs_path, abs_base)
     except Exception:
+        logger.debug(f"relpath failed for {path!r} under {base!r}", exc_info=True)
         return None
     if rel == ".":
         return ""
@@ -307,13 +292,14 @@ def _enclosing_git_dir(root_dir: str) -> str:
                 if os.path.isdir(candidate) or os.path.isfile(candidate):
                     return candidate
             except Exception:
+                logger.debug("enclosing-git-dir probe failed", exc_info=True)
                 break
             parent = os.path.dirname(walking)
             if parent == walking:
                 break
             walking = parent
     except Exception:
-        pass
+        logger.debug("enclosing-git-dir walk failed", exc_info=True)
     return fallback
 
 def should_refresh_for_git_event(
@@ -361,6 +347,7 @@ def should_refresh_for_git_event(
             return True
         return False
     except Exception:
+        logger.debug("git event filter failed", exc_info=True)
         return True
 
 def should_rebuild_tree_for_event(
@@ -387,6 +374,7 @@ def should_rebuild_tree_for_event(
             return True
         return False
     except Exception:
+        logger.debug("tree event filter failed", exc_info=True)
         return True
 
 def collect_watch_dirs(
@@ -432,11 +420,13 @@ def collect_watch_dirs(
                                 break
                             queue.append((path, depth + 1))
                         except OSError:
+                            logger.debug("watch-dir entry skipped", exc_info=True)
                             continue
             except OSError:
+                logger.debug(f"watch-dir scandir failed for {current}", exc_info=True)
                 continue
     except Exception:
-        pass
+        logger.debug(f"collect-watch-dirs failed for {root_dir}", exc_info=True)
     return out
 
 def git_monitor_target(folder: str) -> str | None:
@@ -454,10 +444,12 @@ def git_monitor_target(folder: str) -> str | None:
             if _gitstatus is not None:
                 git_root = _gitstatus.find_git_root(folder)
         except Exception:
+            logger.debug("git root probe failed", exc_info=True)
             git_root = None
         base = git_root or folder
         return os.path.join(base, ".git")
     except Exception:
+        logger.debug(f"git monitor target failed for {folder!r}", exc_info=True)
         return None
 
 def git_event_paths(file_obj, other_obj=None) -> tuple[str | None, str | None]:
@@ -471,12 +463,13 @@ def git_event_paths(file_obj, other_obj=None) -> tuple[str | None, str | None]:
                 value = get_path()
                 return value if isinstance(value, str) else None
         except Exception:
-            pass
+            logger.debug("event path probe failed", exc_info=True)
         return None
 
     try:
         return (_one(file_obj), _one(other_obj))
     except Exception:
+        logger.debug("event paths failed", exc_info=True)
         return (None, None)
 
 @dataclass
@@ -494,6 +487,7 @@ def build_file_tree(root_dir: str, max_depth: int = 10) -> list[FileNode]:
             key=lambda e: (not e.is_dir(follow_symlinks=False), e.name.lower()),
         )
     except OSError:
+        logger.debug(f"file tree scandir failed for {root_dir}", exc_info=True)
         return []
     for entry in entries:
         name = entry.name
@@ -514,6 +508,7 @@ def build_file_tree(root_dir: str, max_depth: int = 10) -> list[FileNode]:
             else:
                 nodes.append(FileNode(name=name, path=path, is_dir=False, children=[]))
         except OSError:
+            logger.debug(f"file tree entry skipped: {path}", exc_info=True)
             continue
     return nodes
 
@@ -527,7 +522,7 @@ try:
         try:
             gi.require_version("GtkSource", "3.0")
         except Exception:
-            pass
+            logger.debug("GtkSource require failed", exc_info=True)
     from gi.repository import Gtk, Gdk, Gio, GLib, GObject, GtkSource  # type: ignore
 except Exception:  # headless
     Gtk = Gdk = Gio = GLib = GObject = GtkSource = None  # type: ignore
@@ -551,6 +546,10 @@ if Gtk is not None:
             self._git_statuses: dict = {}
             self._git_generation = 0
             self._monitors: list = []
+            self._dir_monitors: dict = {}
+            self._git_monitor = None
+            self._git_procs: list = []
+            self._git_procs_lock = threading.Lock()
             self._refresh_timer = None
             self._refresh_interval_s = GIT_REFRESH_MIN_INTERVAL_S
             self._tree_timer = None
@@ -598,6 +597,10 @@ if Gtk is not None:
             self._git_generation += 1
             self._tree_generation += 1
             generation = self._tree_generation
+            try:
+                self._kill_git_procs()
+            except Exception:
+                logger.debug("set_root git kill failed", exc_info=True)
             self._cancel_monitors()
             self._root_dir = folder
             self._git_statuses = {}
@@ -605,7 +608,7 @@ if Gtk is not None:
             try:
                 self.store.clear()
             except Exception:
-                pass
+                logger.debug("tree store clear failed", exc_info=True)
             if not folder or not os.path.isdir(folder):
                 self._root_label.set_text("No folder selected")
                 return
@@ -624,7 +627,7 @@ if Gtk is not None:
             try:
                 self.tree.expand_row(Gtk.TreePath.new_from_indices([0]), False)
             except Exception:
-                pass
+                logger.debug("tree expand failed", exc_info=True)
             self._setup_git_monitors(folder)
             # Build the file list off the UI thread; even mid-size repos
             # made the old synchronous walk hitch the editor on open.
@@ -640,22 +643,28 @@ if Gtk is not None:
                 try:
                     self._populate_tree(build_file_tree(folder), generation)
                 except Exception:
-                    pass
+                    logger.debug("tree populate fallback failed", exc_info=True)
             self.refresh_git_statuses(force=True)
 
         def _build_tree_thread(self, folder: str, generation: int) -> None:
             try:
                 nodes = build_file_tree(folder)
-            except Exception as e:
-                logger.debug(f"tree build failed for {folder}: {e!r}")
+            except Exception:
+                logger.debug(f"tree build failed for {folder}", exc_info=True)
                 nodes = []
+            try:
+                if generation != self._tree_generation:
+                    return
+            except Exception:
+                logger.debug("tree generation check failed", exc_info=True)
+                return
             try:
                 if GLib is not None:
                     GLib.idle_add(self._populate_tree, nodes, generation)
                 else:
                     self._populate_tree(nodes, generation)
-            except Exception as e:
-                logger.debug(f"tree populate schedule failed: {e!r}")
+            except Exception:
+                logger.debug("tree populate schedule failed", exc_info=True)
 
         def _expanded_dir_paths(self) -> set:
             """Filesystem paths of expanded folder rows (survives rebuild)."""
@@ -676,7 +685,7 @@ if Gtk is not None:
                                 if tree.row_expanded(tpath):
                                     out.add(os.path.abspath(path))
                             except Exception:
-                                pass
+                                logger.debug("expanded probe failed", exc_info=True)
                         try:
                             child = store.iter_children(current)
                         except Exception:
@@ -686,12 +695,13 @@ if Gtk is not None:
                         try:
                             current = store.iter_next(current)
                         except Exception:
+                            logger.debug("expanded iter failed", exc_info=True)
                             break
                 first = store.get_iter_first()
                 if first is not None:
                     walk(first)
             except Exception:
-                pass
+                logger.debug("expanded walk failed", exc_info=True)
             return out
 
         def _restore_expanded(self, paths: set) -> None:
@@ -713,7 +723,7 @@ if Gtk is not None:
                                 if os.path.abspath(path) in paths:
                                     tree.expand_row(tpath, False)
                             except Exception:
-                                pass
+                                logger.debug("restore probe failed", exc_info=True)
                         try:
                             child = store.iter_children(current)
                         except Exception:
@@ -723,12 +733,13 @@ if Gtk is not None:
                         try:
                             current = store.iter_next(current)
                         except Exception:
+                            logger.debug("restore iter failed", exc_info=True)
                             break
                 first = store.get_iter_first()
                 if first is not None:
                     walk(first)
             except Exception:
-                pass
+                logger.debug("restore walk failed", exc_info=True)
 
         def refresh_tree(self) -> None:
             """Re-walk the root off-thread (create/delete/move updates)."""
@@ -786,32 +797,32 @@ if Gtk is not None:
                     self.store.set_value(root_iter, self._col_fg, root_color)
                     self.store.set_value(root_iter, self._col_fg_set, root_color is not None)
                 except Exception:
-                    pass
+                    logger.debug("tree populate failed", exc_info=True)
             except Exception as e:
                 logger.debug(f"tree populate failed: {e!r}")
             finally:
                 try:
                     self._freeze_tree(False)
                 except Exception:
-                    pass
+                    logger.debug("tree unfreeze failed", exc_info=True)
             try:
                 self.tree.expand_row(Gtk.TreePath.new_from_indices([0]), False)
             except Exception:
-                pass
+                    logger.debug("tree expand-root failed", exc_info=True)
             try:
                 self._restore_expanded(keep_expanded)
             except Exception:
-                pass
+                    logger.debug("expanded restore failed", exc_info=True)
             try:
                 self._refresh_dir_monitors()
             except Exception:
-                pass
+                    logger.debug("dir monitors refresh failed", exc_info=True)
             # Statuses may have arrived while the tree was building.
             if self._git_statuses:
                 try:
                     self._apply_git_statuses(self._git_statuses, self._git_generation)
                 except Exception:
-                    pass
+                    logger.debug("git statuses apply failed", exc_info=True)
             return False
 
         def _freeze_tree(self, freeze: bool) -> None:
@@ -821,7 +832,7 @@ if Gtk is not None:
                 else:
                     self.tree.thaw_child_notify()
             except Exception:
-                pass
+                    logger.debug("tree freeze failed", exc_info=True)
 
         def _append_node(self, parent, node: FileNode, statuses: dict | None = None) -> str | None:
             gs = _gitstatus if _gitstatus is not None else None
@@ -842,7 +853,7 @@ if Gtk is not None:
                     self.store.set_value(folder_iter, self._col_fg, color)
                     self.store.set_value(folder_iter, self._col_fg_set, color is not None)
                 except Exception:
-                    pass
+                    logger.debug("folder color set failed", exc_info=True)
                 return color
             color = gs.color_for_path(statuses, node.path) if gs is not None else None
             self.store.append(
@@ -893,9 +904,15 @@ if Gtk is not None:
             self._git_generation += 1
             generation = self._git_generation
             try:
+                kill = getattr(self, "_kill_git_procs", None)
+                if callable(kill):
+                    kill()
+            except Exception:
+                logger.debug("git proc kill on refresh failed", exc_info=True)
+            try:
                 self._last_git_refresh = time.monotonic()
             except Exception:
-                pass
+                logger.debug("git refresh clock failed", exc_info=True)
             try:
                 thread = threading.Thread(
                     target=self._query_git_thread,
@@ -906,6 +923,140 @@ if Gtk is not None:
             except Exception as e:
                 logger.debug(f"git refresh spawn failed: {e!r}")
 
+        def _kill_git_procs(self) -> None:
+            """Kill outstanding `git status` procs (generation bump/cleanup)."""
+            procs = []
+            lock = getattr(self, "_git_procs_lock", None)
+            try:
+                if lock is not None:
+                    lock.acquire()
+                procs = list(getattr(self, "_git_procs", []) or [])
+                try:
+                    self._git_procs = []
+                except Exception:
+                    logger.debug("git procs reset failed", exc_info=True)
+            except Exception:
+                logger.debug("git procs snapshot failed", exc_info=True)
+                procs = []
+            finally:
+                try:
+                    if lock is not None:
+                        lock.release()
+                except Exception:
+                    logger.debug("git procs unlock failed", exc_info=True)
+            for proc in procs:
+                try:
+                    if proc.poll() is None:
+                        proc.kill()
+                except Exception:
+                    logger.debug("git proc kill failed", exc_info=True)
+
+        def _run_git_statuses(self, git_root: str, generation: int, timeout_s: float = 3.0) -> dict:
+            """Run `git status` with a short timeout; abort on generation bump."""
+            gs = _gitstatus
+            if gs is None:
+                return {}
+            try:
+                proc = subprocess.Popen(
+                    ["git", "-c", "core.quotepath=false", "status",
+                     "--porcelain=v1", "-uall", "-z"],
+                    cwd=git_root,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                logger.debug(f"git status spawn failed for {git_root}", exc_info=True)
+                return {}
+            lock = getattr(self, "_git_procs_lock", None)
+            try:
+                if lock is not None:
+                    lock.acquire()
+                procs = getattr(self, "_git_procs", None)
+                if isinstance(procs, list):
+                    procs.append(proc)
+            except Exception:
+                logger.debug("git procs register failed", exc_info=True)
+            finally:
+                try:
+                    if lock is not None:
+                        lock.release()
+                except Exception:
+                    logger.debug("git procs unlock failed", exc_info=True)
+            try:
+                try:
+                    deadline = time.monotonic() + float(timeout_s)
+                except Exception:
+                    logger.debug("git status clock failed", exc_info=True)
+                    deadline = 0.0
+                while True:
+                    try:
+                        if generation != self._git_generation:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                logger.debug("git proc kill on bump failed", exc_info=True)
+                            return {}
+                    except Exception:
+                        logger.debug("git generation check failed", exc_info=True)
+                        return {}
+                    try:
+                        rc = proc.poll()
+                    except Exception:
+                        logger.debug("git proc poll failed", exc_info=True)
+                        return {}
+                    if rc is not None:
+                        break
+                    try:
+                        now = time.monotonic()
+                    except Exception:
+                        logger.debug("git status clock failed", exc_info=True)
+                        now = 0.0
+                    if deadline and now >= deadline:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            logger.debug("git proc kill on timeout failed", exc_info=True)
+                        logger.debug(f"git status timeout for {git_root}")
+                        return {}
+                    time.sleep(0.05)
+                try:
+                    out, _ = proc.communicate()
+                except Exception:
+                    logger.debug("git status communicate failed", exc_info=True)
+                    return {}
+                try:
+                    if generation != self._git_generation:
+                        return {}
+                except Exception:
+                    logger.debug("git generation check failed", exc_info=True)
+                    return {}
+                if proc.returncode != 0:
+                    logger.debug(f"git status rc={proc.returncode} for {git_root}")
+                    return {}
+                try:
+                    return gs.parse_porcelain_z(out or b"", os.path.abspath(git_root))
+                except Exception:
+                    logger.debug(f"git status parse failed for {git_root}", exc_info=True)
+                    return {}
+            finally:
+                try:
+                    if lock is not None:
+                        lock.acquire()
+                    procs = getattr(self, "_git_procs", None)
+                    if isinstance(procs, list):
+                        try:
+                            procs.remove(proc)
+                        except ValueError:
+                            logger.debug("git procs unregister skipped", exc_info=True)
+                except Exception:
+                    logger.debug("git procs unregister failed", exc_info=True)
+                finally:
+                    try:
+                        if lock is not None:
+                            lock.release()
+                    except Exception:
+                        logger.debug("git procs unlock failed", exc_info=True)
+
         def _query_git_thread(self, root: str, generation: int) -> None:
             statuses: dict = {}
             try:
@@ -915,19 +1066,33 @@ if Gtk is not None:
                     try:
                         self._git_root_cached = git_root
                     except Exception:
-                        pass
+                        logger.debug("git root cache failed", exc_info=True)
                 if git_root:
-                    statuses = _gitstatus.get_git_statuses(git_root)
-            except Exception as e:
-                logger.debug(f"git status failed for {root}: {e!r}")
+                    try:
+                        runner = getattr(self, "_run_git_statuses", None)
+                        if callable(runner):
+                            statuses = runner(git_root, generation)
+                        else:
+                            statuses = _gitstatus.get_git_statuses(git_root)
+                    except Exception:
+                        logger.debug(f"git status failed for {root}", exc_info=True)
+                        statuses = {}
+            except Exception:
+                logger.debug(f"git status failed for {root}", exc_info=True)
                 statuses = {}
+            try:
+                if generation != self._git_generation:
+                    return
+            except Exception:
+                logger.debug("git generation check failed", exc_info=True)
+                return
             try:
                 if GLib is not None:
                     GLib.idle_add(self._apply_git_statuses, statuses, generation)
                 else:
                     self._apply_git_statuses(statuses, generation)
-            except Exception as e:
-                logger.debug(f"git apply schedule failed: {e!r}")
+            except Exception:
+                logger.debug("git apply schedule failed", exc_info=True)
 
         def _status_color_map(self, statuses: dict) -> dict:
             """Precompute {abspath: color} once per refresh (no per-row abspath)."""
@@ -940,15 +1105,17 @@ if Gtk is not None:
                     try:
                         color = gs.status_to_color(code[0], code[1])
                     except Exception:
+                        logger.debug("git color convert failed", exc_info=True)
                         continue
                     if color is None:
                         continue
                     try:
                         color_map[os.path.abspath(path)] = color
                     except Exception:
+                        logger.debug("git color map store failed", exc_info=True)
                         continue
             except Exception:
-                pass
+                logger.debug("git color map failed", exc_info=True)
             return color_map
 
         def _apply_git_statuses(self, statuses: dict, generation: int) -> bool:
@@ -976,6 +1143,7 @@ if Gtk is not None:
                     try:
                         child = self.store.iter_next(child)
                     except Exception:
+                        logger.debug("git recolor iter failed", exc_info=True)
                         break
                 gs = _gitstatus
                 root_color = gs.aggregate_dir_color(colors) if gs is not None else None
@@ -993,14 +1161,14 @@ if Gtk is not None:
                         self.store.set_value(root_iter, self._col_fg, root_color)
                         self.store.set_value(root_iter, self._col_fg_set, want_set)
                     except Exception:
-                        pass
+                        logger.debug("git recolor row failed", exc_info=True)
             except Exception as e:
                 logger.debug(f"git recolor failed: {e!r}")
             finally:
                 try:
                     self._freeze_tree(False)
                 except Exception:
-                    pass
+                    logger.debug("git recolor children failed", exc_info=True)
             return False
 
         def _recolor_subtree(self, tree_iter, color_map: dict | None = None) -> str | None:
@@ -1033,7 +1201,7 @@ if Gtk is not None:
                         self.store.set_value(tree_iter, self._col_fg, color)
                         self.store.set_value(tree_iter, self._col_fg_set, want_set)
                     except Exception:
-                        pass
+                        logger.debug("git recolor row failed", exc_info=True)
                 return color
             # Folder: recurse into children, then aggregate.
             colors: list = []
@@ -1046,6 +1214,7 @@ if Gtk is not None:
                 try:
                     child = self.store.iter_next(child)
                 except Exception:
+                    logger.debug("git recolor iter failed", exc_info=True)
                     break
             color = gs.aggregate_dir_color(colors) if gs is not None else None
             try:
@@ -1062,7 +1231,7 @@ if Gtk is not None:
                     self.store.set_value(tree_iter, self._col_fg, color)
                     self.store.set_value(tree_iter, self._col_fg_set, want_set)
                 except Exception:
-                    pass
+                    logger.debug("git recolor children failed", exc_info=True)
             return color
 
         def _setup_git_monitors(self, folder: str) -> None:
@@ -1070,27 +1239,31 @@ if Gtk is not None:
                 return
             try:
                 watched: list = []
+                dir_map: dict = {}
                 watch_dirs = collect_watch_dirs(folder)
-                try:
-                    self._watched_dirs = set(watch_dirs)
-                except Exception:
-                    pass
+                self._watched_dirs = set(watch_dirs)
                 for watch_dir in watch_dirs:
                     try:
                         monitor = Gio.File.new_for_path(watch_dir).monitor_directory(
                             Gio.FileMonitorFlags.NONE, None
                         )
-                    except Exception as e:
-                        logger.debug(f"dir monitor failed for {watch_dir}: {e!r}")
+                    except Exception:
+                        logger.debug(f"dir monitor failed for {watch_dir}", exc_info=True)
                         continue
                     try:
                         monitor.connect("changed", self._on_dir_changed)
                     except Exception:
+                        logger.debug(f"dir monitor connect failed for {watch_dir}", exc_info=True)
+                        try:
+                            monitor.cancel()
+                        except Exception:
+                            logger.debug(f"dir monitor cancel failed for {watch_dir}", exc_info=True)
                         continue
                     watched.append(monitor)
+                    dir_map[watch_dir] = monitor
                 git_path = git_monitor_target(folder)
+                git_monitor = None
                 try:
-                    git_monitor = None
                     if git_path is not None and os.path.isdir(git_path):
                         git_monitor = Gio.File.new_for_path(git_path).monitor_directory(
                             Gio.FileMonitorFlags.NONE, None
@@ -1103,39 +1276,92 @@ if Gtk is not None:
                         try:
                             git_monitor.connect("changed", self._on_git_changed)
                         except Exception:
-                            pass
+                            logger.debug(f"git monitor connect failed for {git_path}", exc_info=True)
                         watched.append(git_monitor)
-                except Exception as e:
-                    logger.debug(f"git monitor failed for {git_path}: {e!r}")
+                except Exception:
+                    logger.debug(f"git monitor failed for {git_path}", exc_info=True)
+                    git_monitor = None
                 self._monitors = watched
-            except Exception as e:
-                logger.debug(f"git monitors setup failed: {e!r}")
+                self._dir_monitors = dir_map
+                self._git_monitor = git_monitor
+            except Exception:
+                logger.debug("git monitors setup failed", exc_info=True)
                 self._monitors = []
+                self._dir_monitors = {}
+                self._git_monitor = None
 
         def _refresh_dir_monitors(self) -> None:
-            """Re-watch subdirs after a rebuild (new folders appear)."""
+            """Delta-update dir watches after a rebuild (new folders appear).
+
+            Only watches for added/removed dirs change; the `.git` monitor
+            is never touched so no git event is dropped mid-refresh.
+            """
             if Gio is None or not self._root_dir:
                 return
             try:
                 wanted = set(collect_watch_dirs(self._root_dir))
             except Exception:
+                logger.debug("dir monitors collect failed", exc_info=True)
                 return
             try:
                 current = set(getattr(self, "_watched_dirs", set()) or set())
             except Exception:
+                logger.debug("dir monitors current failed", exc_info=True)
                 current = set()
             if wanted == current:
                 return
+            dir_map = getattr(self, "_dir_monitors", None)
+            if not isinstance(dir_map, dict):
+                try:
+                    self._setup_git_monitors(self._root_dir)
+                except Exception:
+                    logger.debug("dir monitors rebuild failed", exc_info=True)
+                return
             try:
-                for monitor in list(self._monitors):
-                    try:
-                        monitor.cancel()
-                    except Exception:
+                for dead in current - wanted:
+                    mon = dir_map.pop(dead, None)
+                    if mon is None:
                         continue
-                self._monitors = []
-                self._setup_git_monitors(self._root_dir)
-            except Exception as e:
-                logger.debug(f"dir monitors refresh failed: {e!r}")
+                    try:
+                        mon.cancel()
+                    except Exception:
+                        logger.debug(f"dir monitor cancel failed for {dead}", exc_info=True)
+                    try:
+                        self._monitors.remove(mon)
+                    except (ValueError, AttributeError):
+                        logger.debug("dir monitor list remove skipped", exc_info=True)
+                    except Exception:
+                        logger.debug("dir monitors list remove failed", exc_info=True)
+                for fresh in sorted(wanted - current):
+                    try:
+                        monitor = Gio.File.new_for_path(fresh).monitor_directory(
+                            Gio.FileMonitorFlags.NONE, None
+                        )
+                    except Exception:
+                        logger.debug(f"dir monitor failed for {fresh}", exc_info=True)
+                        continue
+                    try:
+                        monitor.connect("changed", self._on_dir_changed)
+                    except Exception:
+                        logger.debug(f"dir monitor connect failed for {fresh}", exc_info=True)
+                        try:
+                            monitor.cancel()
+                        except Exception:
+                            logger.debug(f"dir monitor cancel failed for {fresh}", exc_info=True)
+                        continue
+                    dir_map[fresh] = monitor
+                    try:
+                        self._monitors.append(monitor)
+                    except Exception:
+                        logger.debug("dir monitors list append failed", exc_info=True)
+                        dir_map.pop(fresh, None)
+                        try:
+                            monitor.cancel()
+                        except Exception:
+                            logger.debug(f"dir monitor cancel failed for {fresh}", exc_info=True)
+                self._watched_dirs = wanted
+            except Exception:
+                logger.debug("dir monitors refresh failed", exc_info=True)
 
         def _arm_git_timer(self, delay_ms: int, generation: int, min_interval_s=None) -> None:
             if GLib is None:
@@ -1151,7 +1377,7 @@ if Gtk is not None:
                     try:
                         GLib.source_remove(self._refresh_timer)
                     except Exception:
-                        pass
+                        logger.debug("git timer remove failed", exc_info=True)
                     self._refresh_timer = None
                 self._refresh_timer = GLib.timeout_add(
                     max(50, int(delay_ms)), self._on_git_changed_fire, generation
@@ -1195,14 +1421,14 @@ if Gtk is not None:
                 try:
                     self.refresh_tree()
                 except Exception:
-                    pass
+                    logger.debug("tree refresh fallback failed", exc_info=True)
                 return
             try:
                 if self._tree_timer is not None:
                     try:
                         GLib.source_remove(self._tree_timer)
                     except Exception:
-                        pass
+                        logger.debug("tree timer remove failed", exc_info=True)
                     self._tree_timer = None
                 self._tree_timer = GLib.timeout_add(
                     max(50, int(delay_ms)), self._on_tree_changed_fire, generation
@@ -1230,7 +1456,7 @@ if Gtk is not None:
                             GIT_DIR_DEBOUNCE_MS, self._git_generation, 0.0
                         )
                 except Exception:
-                    pass
+                    logger.debug("git timer arm failed", exc_info=True)
             except Exception as e:
                 logger.debug(f"tree change debounce failed: {e!r}")
 
@@ -1247,52 +1473,42 @@ if Gtk is not None:
         def _cancel_monitors(self) -> None:
             if GLib is not None:
                 for attr in ("_refresh_timer", "_tree_timer"):
-                    try:
-                        timer = getattr(self, attr, None)
-                    except Exception:
-                        timer = None
+                    timer = getattr(self, attr, None)
                     if timer is not None:
                         try:
                             GLib.source_remove(timer)
                         except Exception:
-                            pass
-                    try:
-                        setattr(self, attr, None)
-                    except Exception:
-                        pass
-            try:
-                self._refresh_interval_s = GIT_REFRESH_MIN_INTERVAL_S
-            except Exception:
-                pass
+                            logger.debug(f"timer remove failed: {attr}", exc_info=True)
+                    setattr(self, attr, None)
             else:
-                try:
-                    self._refresh_timer = None
-                except Exception:
-                    pass
-                try:
-                    self._tree_timer = None
-                except Exception:
-                    pass
-            for monitor in self._monitors:
+                self._refresh_timer = None
+                self._tree_timer = None
+            self._refresh_interval_s = GIT_REFRESH_MIN_INTERVAL_S
+            for monitor in list(getattr(self, "_monitors", []) or []):
                 try:
                     monitor.cancel()
                 except Exception:
-                    continue
+                    logger.debug("monitor cancel failed", exc_info=True)
             self._monitors = []
-            try:
-                self._watched_dirs = set()
-            except Exception:
-                pass
+            self._dir_monitors = {}
+            self._git_monitor = None
+            self._watched_dirs = set()
 
         def cleanup(self) -> None:
             try:
                 self._git_generation += 1
             except Exception:
-                pass
+                logger.debug("cleanup git generation failed", exc_info=True)
             try:
                 self._tree_generation += 1
             except Exception:
-                pass
+                logger.debug("cleanup tree generation failed", exc_info=True)
+            try:
+                kill = getattr(self, "_kill_git_procs", None)
+                if callable(kill):
+                    kill()
+            except Exception:
+                logger.debug("cleanup git kill failed", exc_info=True)
             self._cancel_monitors()
 
         def _on_row_activated(self, _tree, path, _col) -> None:
@@ -1306,7 +1522,7 @@ if Gtk is not None:
                 try:
                     self.refresh_tree()
                 except Exception:
-                    pass
+                    logger.debug("row refresh failed", exc_info=True)
                 return
             if self.tree.row_expanded(path):
                 self.tree.collapse_row(path)
@@ -1337,7 +1553,7 @@ def _open_in_thor(window, path: str) -> None:
             try:
                 window.set_active_tab(existing)
             except Exception:
-                pass
+                logger.debug("open tab activate failed", exc_info=True)
         else:
             try:
                 window.create_tab_from_location(loc, None, 0, True, True)
@@ -1345,9 +1561,9 @@ def _open_in_thor(window, path: str) -> None:
                 try:
                     window.create_tab_from_location(loc, create=True, jump_to=True)
                 except Exception:
-                    pass
+                    logger.debug("open tab fallback create failed", exc_info=True)
             except Exception:
-                pass
+                logger.debug("open tab create failed", exc_info=True)
     except Exception as e:
         logger.debug(f"open file failed for {path}: {e!r}")
 
@@ -1364,7 +1580,7 @@ def _choose_root(window, browser) -> None:
             dialog.set_transient_for(window)
             dialog.set_modal(True)
         except Exception:
-            pass
+            logger.debug("folder chooser transient failed", exc_info=True)
         dialog.add_buttons(
             "_Cancel", Gtk.ResponseType.CANCEL,
             "_Open", Gtk.ResponseType.ACCEPT,
@@ -1374,7 +1590,7 @@ def _choose_root(window, browser) -> None:
             if cur and os.path.isdir(cur):
                 dialog.set_current_folder(cur)
         except Exception:
-            pass
+            logger.debug("folder chooser folder set failed", exc_info=True)
     except Exception as e:
         logger.debug(f"folder chooser create failed: {e!r}")
         return
@@ -1396,7 +1612,7 @@ def _choose_root(window, browser) -> None:
         try:
             dialog.destroy()
         except Exception:
-            pass
+            logger.debug("folder chooser destroy failed", exc_info=True)
     if folder and os.path.isdir(folder):
         try:
             if is_unsafe_root(folder):
@@ -1422,7 +1638,7 @@ def _project_key(window, event, browser) -> bool:
             _choose_root(window, browser)
             return True
     except Exception:
-        pass
+        logger.debug("project key check failed", exc_info=True)
     return False
 
 def _consume_pending() -> str | None:
@@ -1440,15 +1656,16 @@ def _consume_pending() -> str | None:
                 glib_cache = GLib.get_user_cache_dir()
                 candidates.append(os.path.join(glib_cache, "thor", "project-mode", PENDING_FILENAME))
             except Exception:
-                pass
+                logger.debug("glib cache dir lookup failed", exc_info=True)
     except Exception:
-        pass
+        logger.debug("pending candidates failed", exc_info=True)
     for cand in candidates:
         try:
             val = take_pending_root(cand)
             if val:
                 return val
         except Exception:
+            logger.debug("pending candidate failed", exc_info=True)
             continue
     try:
         return take_pending_root()
@@ -1472,17 +1689,26 @@ def attach(window, initial_folder: str | None = None) -> object | None:
     except Exception as e:
         logger.debug(f"browser create failed: {e!r}")
         return None
+    handlers: list = []
     try:
-        browser.connect("open-file", lambda _w, p: _open_in_thor(window, p))
+        handlers = list(getattr(window, "_thor_project_handlers", None) or [])
     except Exception:
-        pass
+        logger.debug("project handlers read failed", exc_info=True)
+        handlers = []
     try:
-        browser.connect("choose-root", lambda _w: _choose_root(window, browser))
+        hid = browser.connect("open-file", lambda _w, p: _open_in_thor(window, p))
+        handlers.append((browser, hid))
     except Exception:
-        pass
+        logger.debug("browser open-file connect failed", exc_info=True)
+    try:
+        hid = browser.connect("choose-root", lambda _w: _choose_root(window, browser))
+        handlers.append((browser, hid))
+    except Exception:
+        logger.debug("browser choose-root connect failed", exc_info=True)
     try:
         side = window.get_side_panel()
     except Exception:
+        logger.debug("side panel lookup failed", exc_info=True)
         side = None
     if side is not None:
         try:
@@ -1493,24 +1719,29 @@ def attach(window, initial_folder: str | None = None) -> object | None:
                     side.add_item(browser, "Project Mode", _pick_icon(_PANEL_ICONS))
                 except Exception:
                     side.add_item(browser, "Project", "folder")
-        except Exception as e:
-            logger.debug(f"side panel add failed: {e!r}")
+        except Exception:
+            logger.debug("side panel add failed", exc_info=True)
             try:
                 side.add(browser)
             except Exception:
-                pass
+                logger.debug("side panel fallback add failed", exc_info=True)
     try:
         window._thor_project_browser = browser  # type: ignore[attr-defined]
     except Exception:
-        pass
+        logger.debug("project browser store failed", exc_info=True)
     try:
         setattr(window, "_project_browser", browser)
     except Exception:
-        pass
+        logger.debug("project browser alias store failed", exc_info=True)
     try:
-        window.connect("key-press-event", lambda w, e: _project_key(w, e, browser))
-    except Exception as e:
-        logger.debug(f"window keys connect failed: {e!r}")
+        hid = window.connect("key-press-event", lambda w, e: _project_key(w, e, browser))
+        handlers.append((window, hid))
+    except Exception:
+        logger.debug("window keys connect failed", exc_info=True)
+    try:
+        window._thor_project_handlers = handlers  # type: ignore[attr-defined]
+    except Exception:
+        logger.debug("project handlers store failed", exc_info=True)
     folder_to_load: str | None = initial_folder
     if folder_to_load is None:
         try:
@@ -1518,7 +1749,7 @@ def attach(window, initial_folder: str | None = None) -> object | None:
             if pending and os.path.isdir(pending):
                 folder_to_load = pending
         except Exception:
-            pass
+            logger.debug("pending handoff consume failed", exc_info=True)
     if folder_to_load and os.path.isdir(folder_to_load):
         try:
             if not is_unsafe_root(folder_to_load):
@@ -1539,6 +1770,7 @@ def get_browser(window) -> object | None:
             if val is not None:
                 return val
         except Exception:
+            logger.debug("browser attr probe failed", exc_info=True)
             continue
     try:
         side = window.get_side_panel()
@@ -1553,11 +1785,12 @@ def get_browser(window) -> object | None:
                             if hasattr(w, "set_root") and hasattr(w, "store"):
                                 return w
                     except Exception:
+                        logger.debug("browser page probe failed", exc_info=True)
                         continue
             except Exception:
-                pass
+                logger.debug("browser side-panel probe failed", exc_info=True)
     except Exception:
-        pass
+        logger.debug("browser side-panel scan failed", exc_info=True)
     return None
 
 def detach(window) -> None:
@@ -1572,7 +1805,23 @@ def detach(window) -> None:
         if callable(cleanup):
             cleanup()
     except Exception:
-        pass
+        logger.debug("browser cleanup failed", exc_info=True)
+    try:
+        handlers = list(getattr(window, "_thor_project_handlers", None) or [])
+    except Exception:
+        logger.debug("project handlers read failed", exc_info=True)
+        handlers = []
+    for obj, hid in handlers:
+        if hid is None:
+            continue
+        try:
+            obj.disconnect(hid)
+        except Exception:
+            logger.debug("project handler disconnect failed", exc_info=True)
+    try:
+        window._thor_project_handlers = []  # type: ignore[attr-defined]
+    except Exception:
+        logger.debug("project handlers clear failed", exc_info=True)
     try:
         side = window.get_side_panel()
         if side is not None:
@@ -1582,13 +1831,13 @@ def detach(window) -> None:
                 try:
                     side.remove(browser)
                 except Exception:
-                    pass
+                    logger.debug("side panel remove failed", exc_info=True)
     except Exception:
-        pass
+        logger.debug("side panel lookup failed", exc_info=True)
     try:
         browser.destroy()
     except Exception:
-        pass
+        logger.debug("browser destroy failed", exc_info=True)
     for attr in ("_thor_project_browser", "_project_browser"):
         try:
             if hasattr(window, attr):
@@ -1597,7 +1846,7 @@ def detach(window) -> None:
             try:
                 setattr(window, attr, None)
             except Exception:
-                pass
+                logger.debug(f"project attr clear failed: {attr}", exc_info=True)
 
 # soft alias for tests that import gitstatus helpers from project
 try:
@@ -1607,6 +1856,6 @@ try:
         if not hasattr(gitstatus, "get_git_status") and hasattr(gitstatus, "get_git_statuses"):
             gitstatus.get_git_status = gitstatus.get_git_statuses  # type: ignore[attr-defined]
     except Exception:
-        pass
+        logger.debug("git status alias failed", exc_info=True)
 except Exception:
     gitstatus = None  # type: ignore

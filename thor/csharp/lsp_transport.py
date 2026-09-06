@@ -88,6 +88,8 @@ class LspTransport:
         self._stderr_tail: Deque[str] = collections.deque(maxlen=_STDERR_TAIL_LINES)
         self._stderr_head: List[str] = []
         self._tail_lock = threading.Lock()
+        self._finish_lock = threading.Lock()
+        self._finished = False
         self._send_broken = False
         self.returncode: Optional[int] = None
         self.running = False
@@ -129,24 +131,51 @@ class LspTransport:
         self.running = False
         # Intentional stop is not a crash: suppress the exit callback.
         self._on_exit = None
-        proc, self._proc = self._proc, None
+        proc = self._proc
         if proc is not None:
+            # Graceful LSP shutdown first (shutdown request + exit
+            # notification), then a short grace for a clean exit.
             try:
-                if proc.stdin:
-                    proc.stdin.close()
+                self.send_request("shutdown", {})
             except Exception:
-                pass
+                logger.debug("LspTransport.stop: shutdown request failed", exc_info=True)
+            try:
+                self.send_notification("exit", {})
+            except Exception:
+                logger.debug("LspTransport.stop: exit notification failed", exc_info=True)
+            try:
+                proc.wait(timeout=0.5)
+            except Exception:
+                logger.debug("LspTransport.stop: no fast clean exit, terminating")
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                try:
+                    if stream is not None:
+                        stream.close()
+                except Exception:
+                    logger.debug("LspTransport.stop: stream close failed", exc_info=True)
             try:
                 proc.terminate()
             except Exception:
-                pass
+                logger.debug("LspTransport.stop: terminate failed", exc_info=True)
             try:
                 proc.wait(timeout=3)
             except Exception:
                 try:
                     proc.kill()
                 except Exception:
-                    pass
+                    logger.debug("LspTransport.stop: kill failed", exc_info=True)
+            self._proc = None
+        self._join_threads()
+
+    def _join_threads(self) -> None:
+        """Join pump threads with a timeout; never join the current thread."""
+        current = threading.current_thread()
+        for thread in (self._reader, self._stderr_thread):
+            try:
+                if thread is not None and thread.is_alive() and thread is not current:
+                    thread.join(timeout=2)
+            except Exception:
+                logger.debug("LspTransport: thread join failed", exc_info=True)
 
     def send(self, payload: dict) -> None:
         proc = self._proc
@@ -179,7 +208,7 @@ class LspTransport:
             try:
                 chunk = self._proc.stdout.read(4096)
             except Exception as e:
-                logger.debug(f"LspTransport read error: {e!r}")
+                logger.debug(f"LspTransport read error: {e!r}", exc_info=True)
                 break
             if not chunk:
                 logger.debug("LspTransport: server closed stdout")
@@ -189,7 +218,7 @@ class LspTransport:
                 try:
                     self.on_message(message)
                 except Exception as e:
-                    logger.debug(f"on_message handler failed: {e!r}")
+                    logger.debug(f"on_message handler failed: {e!r}", exc_info=True)
         self._finish()
 
     def _stderr_loop(self) -> None:
@@ -203,13 +232,14 @@ class LspTransport:
             try:
                 log_file = open(self._stderr_log_path, "a", encoding="utf-8", errors="replace")
             except OSError as e:
-                logger.debug(f"LspTransport: cannot open stderr log: {e!r}")
+                logger.debug(f"LspTransport: cannot open stderr log: {e!r}", exc_info=True)
         pending = ""
         try:
             while True:
                 try:
                     chunk = stream.read(4096)
                 except Exception:
+                    logger.debug("LspTransport: stderr read failed", exc_info=True)
                     break
                 if not chunk:
                     break
@@ -222,7 +252,7 @@ class LspTransport:
                         log_file.write(text)
                         log_file.flush()
                     except Exception:
-                        pass
+                        logger.debug("LspTransport: stderr log write failed", exc_info=True)
                 pending += text
                 *lines, pending = pending.split("\n")
                 if lines:
@@ -243,10 +273,14 @@ class LspTransport:
                 try:
                     log_file.close()
                 except Exception:
-                    pass
+                    logger.debug("LspTransport: stderr log close failed", exc_info=True)
 
     def _finish(self) -> None:
         """Reap the child exactly once and report its exit code."""
+        with self._finish_lock:
+            if self._finished:
+                return
+            self._finished = True
         self.running = False
         proc = self._proc
         returncode: Optional[int] = None
@@ -258,15 +292,23 @@ class LspTransport:
                     proc.kill()
                     returncode = proc.wait(timeout=5)
                 except Exception:
+                    logger.debug("LspTransport: reap failed", exc_info=True)
                     returncode = proc.poll()
         self.returncode = returncode
-        logger.debug(f"LspTransport: server exited with code {returncode}")
         callback, self._on_exit = self._on_exit, None
+        if callback is None:
+            logger.debug(f"LspTransport: server exited with code {returncode} (intentional stop)")
+        elif returncode not in (0, None):
+            logger.warning(f"LspTransport: server exited unexpectedly with code {returncode}")
+        else:
+            logger.debug(f"LspTransport: server exited with code {returncode}")
         if callback is not None:
             try:
                 callback(returncode)
             except Exception as e:
-                logger.debug(f"on_exit handler failed: {e!r}")
+                logger.debug(f"on_exit handler failed: {e!r}", exc_info=True)
+        self._join_threads()
+
 
 class PendingRequests:
     """Maps request id -> callback for responses arriving on the reader thread."""

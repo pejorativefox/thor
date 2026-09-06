@@ -274,7 +274,7 @@ def test_git_monitor_target_resolves_repo_root():
         pytest.skip("no git")
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(["git", "init"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         sub = os.path.join(tmp, "src", "deep")
         os.makedirs(sub)
         assert projectmode.git_monitor_target(sub) == os.path.join(tmp, ".git")

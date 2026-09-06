@@ -129,16 +129,15 @@ class OccurrencesManager:
         except Exception as e:
             logger.debug(f"active-tab-changed failed: {e!r}")
 
-    # -- tracking ----------------------------------------------------
     def _doc_key(self, doc) -> int | None:
+        # id(), never hash(): distinct buffers can share a hash (aliasing)
+        # and hash() may invoke overloaded __hash__ on mocks. id() is
+        # unique per live object, which is exactly the tracking scope.
         try:
-            return hash(doc)
-        except Exception:
-            try:
-                return id(doc)
-            except Exception:
-                return None
-
+            return id(doc)
+        except Exception as e:
+            logger.debug("doc key failed: %r", e, exc_info=True)
+            return None
     def _track_view(self, view) -> None:
         try:
             doc = view.get_buffer()
@@ -294,6 +293,23 @@ class OccurrencesManager:
         doc = record.get("doc")
         if doc is None or word_at is None or find_occurrences is None:
             return
+        # Cheap pre-check via word iters: skip the full-buffer snapshot when
+        # the cursor is not on a word (whitespace stops are the common case).
+        # Debounce (see _schedule) already coalesces rapid cursor moves.
+        try:
+            mark = doc.get_insert()
+            cursor_iter = doc.get_iter_at_mark(mark)
+            offset = cursor_iter.get_offset()
+        except Exception as e:
+            logger.debug(f"cursor offset failed: {e!r}")
+            return
+        try:
+            if not self._iter_on_word(cursor_iter):
+                self._clear_doc(doc, record)
+                return
+        except Exception as e:
+            logger.debug("iter word pre-check failed: %r", e, exc_info=True)
+            # fall through to the snapshot path
         try:
             start, end = doc.get_bounds()
             text = doc.get_text(start, end, True)
@@ -303,12 +319,6 @@ class OccurrencesManager:
             except Exception as e:
                 logger.debug(f"text snapshot failed: {e!r}")
                 return
-        try:
-            mark = doc.get_insert()
-            offset = doc.get_iter_at_mark(mark).get_offset()
-        except Exception as e:
-            logger.debug(f"cursor offset failed: {e!r}")
-            return
         try:
             found = word_at(text, offset)
         except Exception as e:
@@ -330,6 +340,26 @@ class OccurrencesManager:
             self._apply(doc, record, hits)
         except Exception as e:
             logger.debug(f"apply failed: {e!r}")
+
+    @staticmethod
+    def _iter_on_word(cursor_iter) -> bool:
+        """True when the iter looks like it sits on/inside a word char."""
+        try:
+            ch = cursor_iter.get_char()
+            if ch and (ch == "_" or ch.isalnum() and ch.isascii()):
+                return True
+        except Exception:
+            pass
+        # At EOF get_char() is empty; check the preceding char instead.
+        try:
+            prev = cursor_iter.copy()
+            if prev.backward_char():
+                ch = prev.get_char()
+                if ch and (ch == "_" or ch.isalnum() and ch.isascii()):
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _ensure_tag(self, doc):
         try:
@@ -435,11 +465,11 @@ class OccurrencesManager:
         if not _GTKSOURCE_AVAILABLE:
             return
         try:
-            if hash(view) in self._mark_views_configured:
-                return
-        except Exception:
             if id(view) in self._mark_views_configured:
                 return
+        except Exception as e:
+            logger.debug("mark configured check failed: %r", e, exc_info=True)
+            return
         try:
             view.set_show_line_marks(True)
             try:
@@ -451,9 +481,9 @@ class OccurrencesManager:
             except Exception as e:
                 logger.debug(f"mark attributes {MARK_CATEGORY} failed: {e!r}")
             try:
-                self._mark_views_configured.add(hash(view))
-            except Exception:
                 self._mark_views_configured.add(id(view))
+            except Exception as e:
+                logger.debug("mark configured stash failed: %r", e, exc_info=True)
         except Exception as e:
             logger.debug(f"configure marks failed: {e!r}")
 

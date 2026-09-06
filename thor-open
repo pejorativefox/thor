@@ -11,15 +11,20 @@ USAGE = "usage: thor-open 'path/to/file.cs[:line[:col]]' [...]"
 
 
 def parse_location(text: str) -> tuple[str, int | None, int | None]:
+    """Split ``path[:line[:col]]`` / ``path(line[,col])`` into parts.
+
+    Right-anchored numeric suffixes only; ``C:\\foo:10:5`` keeps its drive
+    letter and ``a:1:2:3`` treats the extra ``:3`` as part of the path
+    (only the last two numeric groups count as line/col).
+    """
     cleaned = (text or "").strip().strip("'\"")
     match = re.match(r"^(.*?)\((\d+)(?:[,:](\d+))?\)\s*$", cleaned)
     if match:
         path, line, col = match.group(1), match.group(2), match.group(3)
     else:
-        match = re.match(r"^(.*?):(\d+)(?::(\d+))?\s*$", cleaned)
-        if not match:
+        path, line, col = _split_colon_suffix(cleaned)
+        if line is None:
             return cleaned, None, None
-        path, line, col = match.group(1), match.group(2), match.group(3)
     try:
         line_no = max(1, int(line)) if line else None
     except (TypeError, ValueError):
@@ -31,6 +36,33 @@ def parse_location(text: str) -> tuple[str, int | None, int | None]:
     return path.strip(), line_no, col_no
 
 
+def _split_colon_suffix(text: str) -> tuple[str, str | None, str | None]:
+    # Drive-letter prefix (``C:/...`` / ``C:\\...``) is part of the path.
+    prefix = ""
+    rest = text
+    if len(rest) >= 3 and rest[1] == ":" and rest[2] in ("/", "\\"):
+        prefix, rest = rest[:2], rest[2:]
+    elif len(rest) >= 2 and rest[1] == ":" and "/" not in rest and "\\" not in rest:
+        # Bare ``C:foo`` drive-relative path — keep the drive.
+        prefix, rest = rest[:2], rest[2:]
+    parts = rest.split(":")
+    # Peel up to two trailing numeric groups as line/col.
+    nums: list[str] = []
+    while parts and len(nums) < 2 and parts[-1].strip().isdigit():
+        nums.insert(0, parts.pop().strip())
+    if not nums:
+        return text, None, None
+    path = prefix + ":".join(parts)
+    if not path:
+        path = text
+        return path, None, None
+    line = nums[0] if len(nums) >= 1 else None
+    col = nums[1] if len(nums) == 2 else None
+    # Single numeric suffix after a drive-relative bare path like ``a:1``
+    # is line 1 of file ``a`` — correct. But ``a:1:2:3`` leaves path
+    # ``a:1`` with line 2 col 3, preserving the extra group in the path
+    # instead of misreading file ``a`` line 1 col 2.
+    return path, line, col
 def open_location(path: str, line: int | None, col: int | None = None) -> int:
     if not path:
         print("thor-open: empty path", file=sys.stderr)
@@ -43,7 +75,10 @@ def open_location(path: str, line: int | None, col: int | None = None) -> int:
     else:
         argv = ["thor"]
     if line:
-        argv.append(f"+{line}")
+        if col:
+            argv.append(f"+{line}:{col}")
+        else:
+            argv.append(f"+{line}")
     argv.append(path)
     try:
         subprocess.Popen(

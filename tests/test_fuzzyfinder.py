@@ -119,10 +119,7 @@ def test_find_ranks_limits_and_culls():
     assert len(fuzzy_find("", many, limit=3)) == 3
 
 
-def _touch(path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write("x")
+from conftest import _touch  # shared helper (see tests/conftest.py)
 
 
 def test_list_files_skips_hidden_pruned_and_links():
@@ -162,7 +159,7 @@ def test_list_files_respects_gitignore():
         import subprocess
 
         subprocess.run(["git", "-C", tmp, "init", "-q"], check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         found = files_mod.list_project_files(tmp)
         assert os.path.join(tmp, "Keep.cs") in found
         assert os.path.join(tmp, "Skip.log") not in found

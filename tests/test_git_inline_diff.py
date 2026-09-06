@@ -19,13 +19,7 @@ def _has_git():
     return shutil.which("git") is not None
 
 
-def _init_repo(tmp):
-    subprocess.run(["git", "init"], cwd=tmp, check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=tmp, check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp, check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+from conftest import _init_repo  # shared helper (see tests/conftest.py)
 
 
 def test_palette_matches_tree():
@@ -109,7 +103,7 @@ def test_buffer_diff_staged_new_yields_added():
         with open(os.path.join(tmp, "new.txt"), "w") as f:
             f.write("a\nb\nc\n")
         subprocess.run(["git", "add", "new.txt"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         text = diffparse.get_buffer_diff_text(tmp, "new.txt", "a\nb\nc\nd\n")
         assert diffparse.parse_unified_diff(text)["added"] == [0, 1, 2, 3]
 
@@ -149,9 +143,9 @@ def test_status_and_diff_real_repo():
         with open(tracked, "w") as f:
             f.write("one\ntwo\nthree\n")
         subprocess.run(["git", "add", "f.txt"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         subprocess.run(["git", "commit", "-m", "init"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         assert diffparse.file_status_short(tmp, tracked) == ""
         assert diffparse.get_diff_text(tmp, tracked) == ""
 
@@ -256,9 +250,9 @@ def test_buffer_diff_tracks_unsaved_edits():
         with open(tracked, "w") as f:
             f.write("one\ntwo\nthree\n")
         subprocess.run(["git", "add", "f.txt"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         subprocess.run(["git", "commit", "-m", "init"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         # Disk is clean, but the in-memory buffer has unsaved edits.
         assert diffparse.get_diff_text(tmp, tracked) == ""
         hunks = diffparse.parse_unified_diff(
@@ -382,9 +376,9 @@ def test_buffer_matches_head_defers_to_git():
         with open(os.path.join(tmp, "f.txt"), "w") as f:
             f.write("one\ntwo\n")
         subprocess.run(["git", "add", "f.txt"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         subprocess.run(["git", "commit", "-m", "init"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         assert diffparse.buffer_matches_head(tmp, "f.txt", "one\ntwo") is True
         assert diffparse.buffer_matches_head(tmp, "f.txt", "one\ntwo\n") is True
         assert diffparse.buffer_matches_head(tmp, "f.txt", "one\nTWO") is False
@@ -403,9 +397,9 @@ def test_query_thread_prefers_disk_when_buffer_matches_it():
         with open(tracked, "w") as f:
             f.write("one\n")
         subprocess.run(["git", "add", "f.txt"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         subprocess.run(["git", "commit", "-m", "init"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         plugin = gitinline.GitInlineDiffPlugin()
         results = []
         plugin._apply_result = lambda p, r, g: results.append(r) or False  # type: ignore[method-assign]
@@ -442,8 +436,7 @@ def _display():
         if not ok:
             return None
         return Gtk
-    except Exception as e:
-        print(f"SKIP mark-clear test (no display: {e})")
+    except Exception:
         return None
 
 

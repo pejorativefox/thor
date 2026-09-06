@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 from dataclasses import dataclass
 
+logger = logging.getLogger(__name__)
 
 @dataclass
 class DependencyIssue:
@@ -25,6 +27,7 @@ def check_python_modules(find_spec=None) -> list[DependencyIssue]:
         try:
             found = find(module)
         except Exception:
+            logger.debug(f"module probe for {module!r} failed", exc_info=True)
             found = None
         if found is None:
             issues.append(DependencyIssue(
@@ -75,6 +78,7 @@ def check_toolchain(dotnet="dotnet", roslyn_server="~/.dotnet/tools/roslyn-langu
     try:
         resolved = dotnet_cli.resolve_dotnet(dotnet or "dotnet")
     except Exception:
+        logger.debug("dotnet resolution failed", exc_info=True)
         resolved = None
     if not resolved:
         issues.append(DependencyIssue(
@@ -85,6 +89,7 @@ def check_toolchain(dotnet="dotnet", roslyn_server="~/.dotnet/tools/roslyn-langu
     try:
         argv = roslyn_mod.resolve_server_command(roslyn_server or "")
     except Exception:
+        logger.debug("roslyn server resolution failed", exc_info=True)
         argv = None
     if not argv:
         issues.append(DependencyIssue(

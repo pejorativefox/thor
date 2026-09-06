@@ -18,10 +18,7 @@ def _flatten(nodes):
     return out
 
 
-def _touch(path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write("x")
+from conftest import _touch  # shared helper (see tests/conftest.py)
 
 
 def test_build_file_tree_sorted_and_pruned():

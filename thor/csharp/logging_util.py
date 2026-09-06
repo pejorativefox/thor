@@ -32,15 +32,23 @@ except Exception:  # headless / import cycle
 
 
 MARKER_PATH = f"/tmp/thor-csharp-{os.getuid()}.log"
+MARKER_MAX_BYTES = 1 << 20  # 1 MiB cap for the debug marker file.
 
 
 def setup_logging(level: int | None = None) -> None:
+    # Truncate the marker file on start when it exceeds the cap.
+    try:
+        if os.path.getsize(MARKER_PATH) > MARKER_MAX_BYTES:
+            with open(MARKER_PATH, "w", encoding="utf-8") as f:
+                f.write("--- thor-csharp marker rotated on start (exceeded 1MiB) ---\n")
+    except OSError:
+        logging.getLogger(__name__).debug("marker rotation on start failed", exc_info=True)
     if _setup_thor_logging is not None:
         try:
             _setup_thor_logging(level=level)
             return
         except Exception:
-            pass
+            logging.getLogger(__name__).debug("thor setup_logging failed", exc_info=True)
     # Fallback if thor.logging_config unavailable (headless import)
     if level is None:
         level = logging.DEBUG if _is_debug_env() else logging.WARNING
@@ -55,12 +63,11 @@ def setup_logging(level: int | None = None) -> None:
     thor_logger.setLevel(level)
     thor_logger.propagate = False
 
-
 # Auto-configure on import (headless-safe, never raises).
 try:
     setup_logging()
 except Exception:
-    pass
+    logging.getLogger(__name__).debug("logging auto-config failed", exc_info=True)
 
 _logger = logging.getLogger("thor.csharp")
 
@@ -69,13 +76,28 @@ def is_debug() -> bool:
     return _logger.isEnabledFor(logging.DEBUG) or _is_debug_env()
 
 
+def _rotate_marker_if_large() -> None:
+    """Truncate the marker file when it grows past the cap (best effort)."""
+    try:
+        if os.path.getsize(MARKER_PATH) <= MARKER_MAX_BYTES:
+            return
+    except OSError:
+        return
+    try:
+        with open(MARKER_PATH, "w", encoding="utf-8") as f:
+            f.write("--- thor-csharp marker rotated (exceeded 1MiB) ---\n")
+    except OSError:
+        _logger.debug("marker rotation failed", exc_info=True)
+
+
 def _append_marker(event: str) -> None:
     try:
+        _rotate_marker_if_large()
         stamp = datetime.datetime.now().isoformat(timespec="seconds")
         with open(MARKER_PATH, "a", encoding="utf-8") as f:
             f.write(f"{stamp} pid={os.getpid()} {event}\n")
     except Exception:
-        pass
+        _logger.debug("marker append failed", exc_info=True)
 
 
 def debug(msg: str) -> None:

@@ -12,6 +12,7 @@ import sys
 
 USAGE = "usage: thor-code [folder]"
 
+VERSION = "0.1.0"
 
 def _pending_path() -> str:
     # Mirror thor.project._cache_dir() — GLib.get_user_cache_dir() respects
@@ -50,8 +51,15 @@ def launch(target: str) -> int:
     pending = _pending_path()
     try:
         os.makedirs(os.path.dirname(pending), exist_ok=True)
-        with open(pending, "w", encoding="utf-8") as f:
+        # Atomic, last-writer-wins: concurrent thor-code invocations each
+        # write a complete tmp file then os.replace() it, so readers never
+        # see a partial path. No locking; the last replace wins by design.
+        tmp = f"{pending}.tmp-{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write(target + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, pending)
     except OSError as exc:
         print(f"thor-code: failed to record folder: {exc}", file=sys.stderr)
         return 1
@@ -76,8 +84,10 @@ def launch(target: str) -> int:
         return 1
     return 0
 
-
 def main(argv: list[str]) -> int:
+    if len(argv) > 1 and argv[1] in ("--version", "-v"):
+        print(f"thor-code {VERSION}")
+        return 0
     target = resolve_target(argv)
     if target is None:
         print(USAGE)

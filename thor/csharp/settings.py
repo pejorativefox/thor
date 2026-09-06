@@ -72,7 +72,7 @@ class SettingsStore:
                             else:
                                 data[key] = value
         except Exception as e:
-            logger.debug(f"settings load failed: {e!r}")
+            logger.debug(f"settings load failed: {e!r}", exc_info=True)
         self._data = data
         return dict(self._data)
 
@@ -88,7 +88,7 @@ class SettingsStore:
                     f.write(f"{key}={value}\n")
             os.replace(tmp, self._path)
         except Exception as e:
-            logger.debug(f"settings save failed: {e!r}")
+            logger.debug(f"settings save failed: {e!r}", exc_info=True)
 
     def get(self, key: str):
         return self._data.get(key, DEFAULTS.get(key))

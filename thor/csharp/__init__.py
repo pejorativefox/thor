@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,23 @@ def _note(*args, **kwargs) -> None:
 DIAG_TAG_NAMES = {1: "thor-csharp-diag-error", 2: "thor-csharp-diag-warning", 3: "thor-csharp-diag-info"}
 DIAG_MARK_CATEGORY = "thor-csharp-diagnostic"
 
+#: Debounce (ms) before a solution refresh runs after tab switches/adds.
+#: Tabs often change in bursts (startup, session restore); one sweep wins.
+REFRESH_DEBOUNCE_MS = 250
+
+#: Diagnostics arrive in bursts (one notification per file per keystroke);
+#: coalesce them for this long before touching the UI. Reuses a single
+#: timeout source while notifications keep arriving.
+DIAG_DEBOUNCE_MS = 250
+
+#: Minimum gap (s) between Problems-panel rebuilds. Diagnostics storms
+#: (save-all, branch switch) would otherwise rebuild the list per file.
+PROBLEMS_THROTTLE_S = 0.5
+
+#: Cap on Problems rows. Tawdry but effective: a broken generated file
+#: can carry thousands of diagnostics; the panel only needs the head.
+PROBLEMS_MAX_ROWS = 500
+
 
 def _gio_file_path(location) -> str | None:
     try:
@@ -212,11 +230,15 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
     def __init__(self, window=None, initial_folder=None) -> None:
         try:
             super().__init__()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"manager super().__init__ failed: {e!r}")
         self.window = window
         self._initial_folder = initial_folder
-        self.settings = SettingsStore() if SettingsStore is not None else None
+        try:
+            self.settings = SettingsStore() if SettingsStore is not None else None
+        except Exception as e:
+            logger.warning(f"settings store unavailable, using defaults: {e!r}")
+            self.settings = None
         self.explorer: SolutionExplorer | None = None
         self.testpanel: TestPanel | None = None
         self.output: OutputView | None = None
@@ -237,9 +259,24 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         self._doc_versions: dict[str, int] = {}
         self._pending_completion: dict | None = None
         self._completion_forward: tuple | None = None
-        self._mark_views_configured: set[int] = set()
+        self._mark_views_configured: set = set()
         self._discovering_tests = False
         self._completion_warned = ""
+        # Solution refresh runs off-thread; the generation counter drops
+        # stale results when refreshes overlap (startup bursts).
+        self._refresh_gen = 0
+        # Diagnostics coalescing: one pending source + last Problems build.
+        self._diag_source: int | None = None
+        self._diag_pending = False
+        self._problems_last = 0.0
+        # Live dotnet children (build/test/run); cancelled on deactivate
+        # so no orphan keeps writing to a dead panel.
+        self._stream_handles: list = []
+        # Coalesced output appends: per-line appends each create a Gtk
+        # TextMark + scroll; batch them per idle tick instead.
+        self._output_pending: list[str] = []
+        self._output_scheduled = False
+        self._output_lock = threading.Lock()
 
     # -- activation --------------------------------------------------
     def do_activate(self) -> None:
@@ -305,32 +342,49 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         if self._refresh_source is not None:
             try:
                 GLib.source_remove(self._refresh_source)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"deactivate refresh remove failed: {e!r}")
             self._refresh_source = None
+        if self._diag_source is not None:
+            try:
+                GLib.source_remove(self._diag_source)
+            except Exception as e:
+                logger.debug(f"deactivate diag remove failed: {e!r}")
+            self._diag_source = None
+        self._refresh_gen += 1  # drop any in-flight worker publish
+        # Reap live dotnet children so no orphan writes to dead panels.
+        for handle in list(getattr(self, "_stream_handles", [])):
+            try:
+                handle.cancel()
+            except Exception as e:
+                logger.debug(f"deactivate stream cancel failed: {e!r}")
+        try:
+            self._stream_handles.clear()
+        except Exception as e:
+            logger.debug(f"deactivate stream clear failed: {e!r}")
         if self.tracker is not None:
             try:
                 self.tracker.detach()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"deactivate tracker detach failed: {e!r}")
             self.tracker = None
         try:
             if self._gs_provider is not None and _GTKSOURCE_AVAILABLE:
                 gs_mod.detach_from_views(self.window, self._gs_provider, self._gs_attached)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"deactivate gs detach failed: {e!r}")
         self._gs_provider = None
         self._disconnect_completion_forward()
         for obj, handler_id in self._signal_ids:
             try:
                 obj.disconnect(handler_id)  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"deactivate disconnect failed: {e!r}")
         self._signal_ids.clear()
         try:
             self.roslyn.stop()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"deactivate roslyn stop failed: {e!r}")
         for widget_name, accessor in (
             ("explorer", lambda: self.window.get_side_panel()),
             ("testpanel", lambda: self.window.get_side_panel()),
@@ -344,14 +398,14 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
                 _remove_from_panel(panel, widget)
             try:
                 widget.destroy()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"deactivate widget destroy failed: {e!r}")
             setattr(self, widget_name, None)
         if self.completion_popup is not None:
             try:
                 self.completion_popup.destroy()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"deactivate popup destroy failed: {e!r}")
             self.completion_popup = None
 
     def do_update_state(self) -> None:
@@ -474,33 +528,30 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         if self._refresh_source is not None:
             try:
                 GLib.source_remove(self._refresh_source)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"refresh unschedule failed: {e!r}")
         try:
-            self._refresh_source = GLib.timeout_add(250, self._refresh_cb)
-        except Exception:
+            self._refresh_source = GLib.timeout_add(REFRESH_DEBOUNCE_MS, self._refresh_cb)
+        except Exception as e:
+            logger.debug(f"refresh schedule failed: {e!r}")
             self._refresh_cb()
 
     def _refresh_cb(self) -> bool:
+        """Debounce entry: discovery runs on a worker, publish on idle.
+
+        ``dotnet sln list`` + the project glob can take seconds on big
+        trees; blocking the main loop here froze the editor on every tab
+        switch. The generation counter drops late results when a newer
+        refresh overtook them.
+        """
         self._refresh_source = None
-        try:
-            self._refresh_solution()
-        except Exception as e:
-            logger.debug(f"refresh failed: {e!r}")
-        return False
-
-    # -- solution ----------------------------------------------------
-    def _dotnet(self) -> str:
-        configured = str(self.settings.get("dotnet_executable") or "dotnet")
-        resolved = dotnet_cli.resolve_dotnet(configured)
-        return resolved or configured
-
-    def _refresh_solution(self) -> None:
+        self._refresh_gen += 1
+        gen = self._refresh_gen
         if self.completion_popup is not None:
             try:
                 self.completion_popup.dismiss()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"refresh dismiss failed: {e!r}")
         active = self._active_path()
         start = (
             active
@@ -510,11 +561,83 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         )
         try:
             cwd = os.getcwd()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"refresh cwd failed: {e!r}")
             cwd = "?"
-        logger.debug(f"refresh solution from {start} (active={active} cwd={cwd})")
+        logger.debug(f"refresh solution from {start} (active={active} cwd={cwd}) gen={gen}")
+        if self.output is not None:
+            try:
+                self.output.set_status("Discovering C# solution…")
+            except Exception as e:
+                logger.debug(f"refresh status failed: {e!r}")
         dotnet = self._dotnet()
-        self._model = solution_mod.load_solution(start, dotnet)
+
+        def _worker() -> None:
+            try:
+                model = solution_mod.load_solution(start, dotnet)
+            except OSError as e:
+                # Discovery must never crash the refresh path.
+                logger.debug(f"refresh discovery failed: {e!r}")
+                model = None
+            except Exception as e:
+                logger.debug(f"refresh discovery failed: {e!r}")
+                model = None
+            try:
+                GLib.idle_add(self._publish_solution, model, gen)
+            except Exception as e:
+                logger.debug(f"refresh publish schedule failed: {e!r}")
+
+        try:
+            threading.Thread(target=_worker, name="thor-csharp-refresh", daemon=True).start()
+        except Exception as e:
+            logger.debug(f"refresh thread failed, running inline: {e!r}")
+            _worker()
+        return False
+
+    def _publish_solution(self, model, gen: int) -> bool:
+        """Main-loop publish of a worker-loaded solution (drops stale gens)."""
+        if gen != self._refresh_gen:
+            logger.debug(f"refresh gen={gen} superseded by gen={self._refresh_gen}, dropping")
+            return False
+        try:
+            self._refresh_solution(model)
+        except OSError as e:
+            logger.debug(f"refresh publish failed: {e!r}")
+            if self.output is not None:
+                self.output.set_status("Solution refresh failed — see log.")
+        except Exception as e:
+            logger.debug(f"refresh publish failed: {e!r}")
+            if self.output is not None:
+                self.output.set_status("Solution refresh failed — see log.")
+        return False
+
+    def _refresh_solution(self, model=None) -> None:
+        if model is None and self._model is not None:
+            # Worker found nothing usable (or crashed); keep the last good
+            # model instead of blanking the explorer mid-session.
+            logger.debug("refresh: worker returned no model, keeping previous")
+            if self.output is not None:
+                self.output.set_status("Solution refresh failed — keeping previous.")
+            return
+        if model is not None:
+            self._model = model
+        elif self._model is None:
+            # Synchronous fallback (tests/headless): load inline.
+            active = self._active_path()
+            start = (
+                active
+                or self._open_doc_dir()
+                or self._startup_dir()
+                or os.path.expanduser("~")
+            )
+            dotnet = self._dotnet()
+            try:
+                self._model = solution_mod.load_solution(start, dotnet)
+            except OSError as e:
+                logger.debug(f"refresh discovery failed: {e!r}")
+                if self.output is not None:
+                    self.output.set_status("Solution refresh failed — see log.")
+                return
         if self.explorer is not None:
             self.explorer.set_model(self._model)
         if self.output is not None:
@@ -552,7 +675,7 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
                 self.output.append(message + "\n")
                 self.output.set_status("Roslyn not started — open the solution folder.")
             return
-        configured = str(self.settings.get("roslyn_server") or "~/.dotnet/tools/roslyn-language-server")
+        configured = str(self._setting("roslyn_server", "~/.dotnet/tools/roslyn-language-server") or "~/.dotnet/tools/roslyn-language-server")
         argv = roslyn_mod.resolve_server_command(configured)
         if argv is None:
             try:
@@ -580,7 +703,7 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             self._model.root_dir,
             argv,
             log_dir=log_dir or None,
-            log_level=str(self.settings.get("roslyn_log_level") or "Information"),
+            log_level=str(self._setting("roslyn_log_level", "Information") or "Information"),
             stderr_log_path=os.path.join(log_dir, "roslyn-stderr.log") if log_dir else None,
         )
         logger.debug(f"roslyn ensure: start returned {ok}")
@@ -661,7 +784,7 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             self.roslyn.did_save(path, text)
         except Exception as e:
             logger.debug(f"did_save failed: {e!r}")
-        if bool(self.settings.get("format_on_save")):
+        if bool(self._setting("format_on_save", False)):
             self._format_doc_path(path)
 
     def _on_doc_closed(self, path: str) -> None:
@@ -682,23 +805,66 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
 
     # -- diagnostics -------------------------------------------------
     def _on_diagnostics(self, uri: str, raw: list) -> None:
-        items = intel.normalize_diagnostics(uri, raw)
+        try:
+            items = intel.normalize_diagnostics(uri, raw)
+        except Exception as e:
+            logger.debug(f"diagnostics normalize failed: {e!r}")
+            return
         self.diagnostics[uri] = items
-        total_errors = sum(1 for v in self.diagnostics.values() for d in v if d.severity == 1)
-        total_warns = sum(1 for v in self.diagnostics.values() for d in v if d.severity == 2)
-        if self.output is not None:
-            self.output.set_status(f"C#: {total_errors} errors, {total_warns} warnings")
-        self._refresh_problems()
-        for path, doc in self._iter_csharp_docs():
-            try:
-                if roslyn_mod.file_uri(path) == uri:
-                    self._render_diagnostics(doc, items)
-            except Exception as e:
-                logger.debug(f"diagnostics render failed: {e!r}")
+        # Coalesce bursts (one notification per file per keystroke): reuse
+        # the pending source instead of rebuilding the UI per file.
+        self._diag_pending = True
+        if self._diag_source is not None:
+            return
+        try:
+            self._diag_source = GLib.timeout_add(DIAG_DEBOUNCE_MS, self._diag_cb)
+        except Exception as e:
+            logger.debug(f"diagnostics schedule failed: {e!r}")
+            self._diag_cb()
 
-    def _refresh_problems(self) -> None:
+    def _diag_cb(self) -> bool:
+        """Flush coalesced diagnostics to status/problems/gutter."""
+        self._diag_source = None
+        if not self._diag_pending:
+            return False
+        self._diag_pending = False
+        try:
+            total_errors = sum(1 for v in self.diagnostics.values() for d in v if d.severity == 1)
+            total_warns = sum(1 for v in self.diagnostics.values() for d in v if d.severity == 2)
+            if self.output is not None:
+                self.output.set_status(f"C#: {total_errors} errors, {total_warns} warnings")
+            self._refresh_problems()
+            for path, doc in self._iter_csharp_docs():
+                try:
+                    for uri, items in self.diagnostics.items():
+                        if roslyn_mod.file_uri(path) == uri:
+                            self._render_diagnostics(doc, items)
+                            break
+                except Exception as e:
+                    logger.debug(f"diagnostics render failed: {e!r}")
+        except Exception as e:
+            logger.debug(f"diagnostics flush failed: {e!r}")
+        return False
+
+    def _refresh_problems(self, force: bool = False) -> None:
         if self.output is None:
             return
+        # Throttle rebuilds during diagnostics storms; re-arm once so the
+        # final state still lands.
+        try:
+            now = time.monotonic()
+        except Exception:
+            now = 0.0
+        if not force and 0.0 < now - self._problems_last < PROBLEMS_THROTTLE_S:
+            if self._diag_source is None:
+                try:
+                    delay_ms = max(1, int(PROBLEMS_THROTTLE_S * 1000))
+                    self._diag_source = GLib.timeout_add(delay_ms, self._diag_cb)
+                    self._diag_pending = True
+                except Exception as e:
+                    logger.debug(f"problems re-arm failed: {e!r}")
+            return
+        self._problems_last = now
         rows: list[tuple[str, str, int, str, str]] = []
         for uri, items in self.diagnostics.items():
             for diag in items:
@@ -711,6 +877,10 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
                         diag.path,
                     )
                 )
+                if len(rows) >= PROBLEMS_MAX_ROWS:
+                    break
+            if len(rows) >= PROBLEMS_MAX_ROWS:
+                break
         rows.sort(key=lambda r: (r[1], r[2]))
         self.output.set_problems(rows)
 
@@ -789,6 +959,15 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
                 continue
         self._configure_marks(doc)
 
+    @staticmethod
+    def _marks_key(view):
+        """Stable identity key for a view (never hash(view): collisions)."""
+        try:
+            hash(view)
+        except Exception:
+            return ("id", id(view))
+        return view
+
     def _configure_marks(self, doc) -> None:
         """Enable gutter marks on views showing this doc (once per view)."""
         if not _GTKSOURCE_AVAILABLE:
@@ -801,7 +980,7 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             try:
                 if view.get_buffer() is not doc:
                     continue
-                if hash(view) in self._mark_views_configured:
+                if self._marks_key(view) in self._mark_views_configured:
                     continue
                 view.set_show_line_marks(True)
                 for category, color in (
@@ -815,8 +994,9 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
                         view.set_mark_attributes(category, attrs, 10)
                     except Exception as e:
                         logger.debug(f"mark attributes {category} failed: {e!r}")
-                self._mark_views_configured.add(hash(view))
-            except Exception:
+                self._mark_views_configured.add(self._marks_key(view))
+            except Exception as e:
+                logger.debug(f"configure marks failed: {e!r}")
                 continue
 
     # -- completion --------------------------------------------------
@@ -867,12 +1047,12 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         try:
             logger.error(f"completion unavailable: {message}")
         except Exception:
-            pass
+            pass  # logging itself failed; nothing left to report with
         if status and self.output is not None:
             try:
                 self.output.set_status(status)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion warn status failed: {e!r}")
 
     def _gs_resolve_path(self, buf) -> str | None:
         """Map a buffer to its .cs path (None for anything else)."""
@@ -880,17 +1060,14 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             direct = doc_path(buf)
             if direct and direct.endswith(".cs"):
                 return direct
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"gs resolve direct failed: {e!r}")
         try:
             for doc in self.window.get_documents():
                 try:
+                    # Identity first, then path equality. Never hash(doc):
+                    # hashes collide across buffers and are not identity.
                     same = doc is buf
-                    if not same:
-                        try:
-                            same = hash(doc) == hash(buf)
-                        except Exception:
-                            same = False
                     if not same:
                         try:
                             same = doc_path(doc) == doc_path(buf) and doc_path(doc) is not None
@@ -899,10 +1076,11 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
                     if same:
                         path = doc_path(doc)
                         return path if (path and path.endswith(".cs")) else None
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"gs resolve doc failed: {e!r}")
                     continue
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"gs resolve scan failed: {e!r}")
         return None
 
     def _gs_send_request(self, method: str, params: dict, callback):
@@ -1114,6 +1292,33 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             # further typing may match again, Escape/space dismisses.
             pass
 
+    @staticmethod
+    def _completion_range(item, text: str, cur: int) -> tuple:
+        """(start, end) offsets to replace when applying a completion item.
+
+        Prefers the LSP ``replace`` range, then the ``insert`` range, when
+        it still intersects the cursor; otherwise the identifier at the
+        cursor (the user typed on while the popup was up). Bounds are
+        clamped to the buffer so stale ranges cannot corrupt text.
+        """
+        fallback_start, fallback_cur = intel.prefix_at(text, cur)[1], cur
+        candidates = []
+        try:
+            candidates.append((int(item.replace_start), int(item.replace_end)))
+        except (TypeError, ValueError, AttributeError):
+            pass
+        try:
+            candidates.append((int(item.insert_start), int(item.insert_end)))
+        except (TypeError, ValueError, AttributeError):
+            pass
+        for s, e in candidates:
+            if 0 <= s <= cur <= e <= len(text) and e > s:
+                return s, e
+            if 0 <= s <= cur <= len(text) and e >= cur:
+                return s, cur
+        logger.debug("completion apply: stored range stale, word fallback")
+        return max(0, fallback_start), max(0, fallback_cur)
+
     def _apply_completion(self, item) -> None:
         pending = self._pending_completion or {}
         path = pending.get("path") or self._active_path()
@@ -1122,18 +1327,21 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         doc = self._find_doc(path)
         if doc is None:
             return
-        # Replace the CURRENT word prefix, not the stale range from request
-        # time: the user may have typed more characters while filtering.
+        # Prefer the LSP ranges carried by the item (replace, else insert);
+        # fall back to the CURRENT word prefix only when the stored range
+        # no longer intersects the cursor (stale: the user typed on while
+        # filtering, or the buffer changed under the request).
         try:
             text = buffer_text(doc)
             cur = cursor_offset(doc)
-            _prefix, start = intel.prefix_at(text, cur)
-        except Exception:
-            start, cur = max(0, item.replace_start), max(0, item.replace_end)
+        except Exception as e:
+            logger.debug(f"completion apply: buffer read failed: {e!r}")
+            return
+        start, end = self._completion_range(item, text, cur)
         try:
             doc.begin_user_action()
             start_iter = doc.get_iter_at_offset(max(0, start))
-            end_iter = doc.get_iter_at_offset(max(0, cur))
+            end_iter = doc.get_iter_at_offset(max(0, end))
             doc.delete(start_iter, end_iter)
             at = doc.get_iter_at_offset(max(0, start))
             doc.insert(at, item.insert_text)
@@ -1163,8 +1371,8 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             logger.debug(f"completion apply failed: {e!r}")
             try:
                 doc.end_user_action()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"completion apply cleanup failed: {e!r}")
         self._dismiss_completion()
 
     def _dismiss_completion(self) -> None:
@@ -1392,11 +1600,35 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
     def _on_hover_request(self, _tracker, path: str, line: int, char: int) -> None:
         if not self._roslyn_ready() or self.tracker is None:
             return
+        try:
+            seq = self.tracker.last_hover_seq()
+        except Exception:
+            seq = None
         self.roslyn.request(
             "textDocument/hover",
             intel.position_params(path, line, char),
-            lambda message: self.tracker.show_hover_text(intel.parse_hover(message)),
+            lambda message: self._on_hover_response(message, seq),
         )
+
+    def _on_hover_response(self, message: dict, seq) -> None:
+        tracker = self.tracker
+        if tracker is None:
+            return
+        try:
+            text = intel.parse_hover(message)
+        except Exception as e:
+            logger.debug(f"hover parse failed: {e!r}")
+            return
+        try:
+            tracker.show_hover_text(text, seq)
+        except TypeError:
+            # Older/test doubles with show_hover_text(text): retry unpaired.
+            try:
+                tracker.show_hover_text(text)
+            except Exception as e:
+                logger.debug(f"hover deliver failed: {e!r}")
+        except Exception as e:
+            logger.debug(f"hover deliver failed: {e!r}")
 
     # -- formatting / code actions -----------------------------------
     def _format_doc_path(self, path: str) -> None:
@@ -1411,6 +1643,29 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         }
         self.roslyn.request("textDocument/formatting", params, lambda m: self._on_format_response(path, m))
 
+    @staticmethod
+    def _verified_ops(ops: list, length: int, what: str) -> list:
+        """Drop edit ops whose ranges no longer fit ``length`` chars.
+
+        LSP edits are computed against older buffer text; the user may
+        have typed since. Out-of-bounds or reversed ranges are dropped
+        with a debug log instead of corrupting the buffer. Callers apply
+        the survivors end-first (``text_edits_to_ops`` order) so earlier
+        offsets stay valid.
+        """
+        good = []
+        for op in ops or []:
+            try:
+                s, e = int(op.start), int(op.end)
+            except (TypeError, ValueError, AttributeError) as ex:
+                logger.debug(f"{what}: dropping op with bad offsets: {ex!r}")
+                continue
+            if not (0 <= s <= e <= length):
+                logger.debug(f"{what}: dropping op {s}-{e} outside 0-{length}")
+                continue
+            good.append(op)
+        return good
+
     def _on_format_response(self, path: str, message: dict) -> None:
         doc = self._find_doc(path)
         if doc is None:
@@ -1422,6 +1677,13 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             return
         ops = intel.text_edits_to_ops(edits, buffer_text(doc))
         if not ops:
+            return
+        # Re-read: the buffer may have moved since the request. Ranges
+        # are re-anchored against current text; stale ones are dropped.
+        current = buffer_text(doc)
+        ops = self._verified_ops(ops, len(current), "format")
+        if not ops:
+            logger.debug("format: all ops stale, nothing applied")
             return
         try:
             doc.begin_user_action()
@@ -1437,8 +1699,8 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             logger.debug(f"format apply failed: {e!r}")
             try:
                 doc.end_user_action()
-            except Exception:
-                pass
+            except Exception as ce:
+                logger.debug(f"format cleanup failed: {ce!r}")
 
     def _on_code_action_request(self, _tracker, path: str, line: int, char: int) -> None:
         if not self._roslyn_ready():
@@ -1526,8 +1788,8 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
                 p = doc_path(doc)
                 if p:
                     texts[roslyn_mod.file_uri(p)] = buffer_text(doc)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"workspace edit doc scan failed: {e!r}")
         ops_by_uri = intel.workspace_edit_to_ops(edit, texts)
         applied = 0
         for uri, ops in ops_by_uri.items():
@@ -1537,6 +1799,11 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             doc = self._find_doc(fpath)
             try:
                 if doc is not None:
+                    current = buffer_text(doc)
+                    ops = self._verified_ops(ops, len(current), f"workspace-edit {fpath}")
+                    if not ops:
+                        logger.debug(f"workspace edit: all ops stale for {fpath}")
+                        continue
                     doc.begin_user_action()
                     for op in ops:
                         start = doc.get_iter_at_offset(max(0, op.start))
@@ -1548,45 +1815,125 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
                 elif fpath and os.path.isfile(fpath):
                     with open(fpath, "r", encoding="utf-8") as f:
                         current = f.read()
+                    ops = self._verified_ops(ops, len(current), f"workspace-edit {fpath}")
+                    if not ops:
+                        logger.debug(f"workspace edit: all ops stale for {fpath}")
+                        continue
                     new_text = intel.apply_ops_to_text(current, ops)
                     with open(fpath, "w", encoding="utf-8") as f:
                         f.write(new_text)
                     applied += 1
+            except OSError as e:
+                logger.debug(f"workspace edit file failed for {fpath}: {e!r}")
+                try:
+                    if doc is not None:
+                        doc.end_user_action()
+                except Exception as ce:
+                    logger.debug(f"workspace edit cleanup failed: {ce!r}")
             except Exception as e:
                 logger.debug(f"workspace edit apply failed for {fpath}: {e!r}")
                 try:
                     if doc is not None:
                         doc.end_user_action()
-                except Exception:
-                    pass
+                except Exception as ce:
+                    logger.debug(f"workspace edit cleanup failed: {ce!r}")
         if self.output is not None:
             self.output.set_status(f"Applied edits to {applied} file(s).")
 
     # -- build / run / test actions ----------------------------------
+    def _append_output(self, text: str) -> None:
+        """Batched OutputView append (mark-leak adjacent).
+
+        ``OutputView._append`` creates a Gtk TextMark per call; streaming
+        a build line-by-line would create thousands of marks. Coalesce
+        everything pending into one append per main-loop tick instead.
+        Safe from any thread.
+        """
+        if self.output is None:
+            return
+        schedule = False
+        try:
+            with self._output_lock:
+                self._output_pending.append(text)
+                if not self._output_scheduled:
+                    self._output_scheduled = True
+                    schedule = True
+        except Exception as e:
+            logger.debug(f"output batch failed: {e!r}")
+            return
+        if schedule:
+            try:
+                GLib.idle_add(self._flush_output)
+            except Exception as e:
+                logger.debug(f"output flush schedule failed: {e!r}")
+
+    def _flush_output(self) -> bool:
+        try:
+            with self._output_lock:
+                chunk = "".join(self._output_pending)
+                self._output_pending.clear()
+                self._output_scheduled = False
+        except Exception as e:
+            logger.debug(f"output flush failed: {e!r}")
+            return False
+        if chunk and self.output is not None:
+            try:
+                self.output.append(chunk)
+            except Exception as e:
+                logger.debug(f"output append failed: {e!r}")
+        return False
+
+    def _track_stream(self, handle) -> None:
+        try:
+            self._stream_handles.append(handle)
+        except Exception as e:
+            logger.debug(f"stream track failed: {e!r}")
+
+    def _untrack_stream(self, handle) -> None:
+        try:
+            if handle in self._stream_handles:
+                self._stream_handles.remove(handle)
+        except Exception as e:
+            logger.debug(f"stream untrack failed: {e!r}")
+
     def _run_stream(self, argv: list[str], cwd: str, label: str) -> None:
         if self.output is None:
             return
-        self.output.append(f"\n$ {' '.join(argv)}\n")
+        self._append_output(f"\n$ {' '.join(argv)}\n")
         self.output.set_status(label + "…")
 
         def on_line(_stream: str, text: str) -> None:
-            assert self.output is not None
-            self.output.append(text)
+            self._append_output(text)
 
         def on_done(returncode: int) -> None:
             def _done() -> None:
-                assert self.output is not None
-                self.output.append(f"\n(exit {returncode})\n")
-                self.output.set_status(f"{label}: exit {returncode}")
+                self._untrack_stream(handle)
+                self._flush_output()
+                if self.output is not None:
+                    self._append_output(f"\n(exit {returncode})\n")
+                    self.output.set_status(f"{label}: exit {returncode}")
                 if "Build" in label or "Restore" in label:
                     self._schedule_refresh()
+                return False
 
-            GLib.idle_add(_done)
+            try:
+                GLib.idle_add(_done)
+            except Exception as e:
+                logger.debug(f"stream done schedule failed: {e!r}")
 
-        dotnet_cli.run_streaming(argv, cwd, on_line, on_done)
+        try:
+            handle = dotnet_cli.run_streaming(argv, cwd, on_line, on_done)
+        except Exception as e:
+            logger.debug(f"stream start failed: {e!r}")
+            if self.output is not None:
+                self.output.set_status(f"{label} failed to start.")
+            return
+        self._track_stream(handle)
 
     def _build_solution(self) -> None:
         if not self._model:
+            if self.output is not None:
+                self.output.set_status("No solution loaded — nothing to build.")
             return
         target = self._model.path or self._model.root_dir
         self._run_stream([self._dotnet(), "build", target], self._model.root_dir, "Build")
@@ -1601,6 +1948,8 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
 
     def _restore(self) -> None:
         if not self._model:
+            if self.output is not None:
+                self.output.set_status("No solution loaded — nothing to restore.")
             return
         target = self._model.path or self._model.root_dir
         self._run_stream([self._dotnet(), "restore", target], self._model.root_dir, "Restore")
@@ -1650,17 +1999,18 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             argv += ["--filter", f"FullyQualifiedName={fqn}"]
         label = f"Test {os.path.basename(project)}{f':{fqn}' if fqn else ''}"
         self.testpanel.mark_running(project, fqn)
-        self.output.append(f"\n$ {' '.join(argv)}\n")
+        self._append_output(f"\n$ {' '.join(argv)}\n")
         self.output.set_status(label + "…")
         lines: list[str] = []
 
         def on_line(_stream: str, text: str) -> None:
             lines.append(text)
-            assert self.output is not None
-            self.output.append(text)
+            self._append_output(text)
 
         def on_done(returncode: int) -> None:
             def _done() -> bool:
+                self._untrack_stream(handle)
+                self._flush_output()
                 run = testing_mod.parse_test_output("".join(lines), project)
                 outcomes = {c.name: c.outcome for c in run.cases}
                 if self.testpanel is not None:
@@ -1671,18 +2021,31 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
                         if run.total:
                             summary = f"{run.passed} passed, {run.failed} failed, {run.skipped} skipped"
                         self.testpanel.set_status(f"{os.path.basename(project)}: {summary}")
-                assert self.output is not None
-                self.output.append(f"\n(exit {returncode})\n")
-                self.output.set_status(f"{label}: exit {returncode}")
+                if self.output is not None:
+                    self._append_output(f"\n(exit {returncode})\n")
+                    self.output.set_status(f"{label}: exit {returncode}")
                 return False
 
-            GLib.idle_add(_done)
+            try:
+                GLib.idle_add(_done)
+            except Exception as e:
+                logger.debug(f"test done schedule failed: {e!r}")
 
-        dotnet_cli.run_streaming(argv, root, on_line, on_done)
+        try:
+            handle = dotnet_cli.run_streaming(argv, root, on_line, on_done)
+        except Exception as e:
+            logger.debug(f"test stream start failed: {e!r}")
+            self.testpanel.set_status(f"{label}: failed to start.")
+            return
+        self._track_stream(handle)
 
     def _run_all_tests(self) -> None:
         projects = [p.path for p in self._test_projects()]
         if not projects:
+            if self.output is not None:
+                self.output.set_status("No test projects found.")
+            elif self.testpanel is not None:
+                self.testpanel.set_status("No test projects found.")
             return
 
         def _chain(index: int) -> None:
@@ -1691,19 +2054,19 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             project = projects[index]
             root = self._model.root_dir if self._model else os.path.dirname(project)
             argv = [self._dotnet(), "test", project, "--nologo", "-v", "n"]
-            if self.output is not None:
-                self.output.append(f"\n$ {' '.join(argv)}\n")
+            self._append_output(f"\n$ {' '.join(argv)}\n")
             if self.testpanel is not None:
                 self.testpanel.mark_running(project)
             lines: list[str] = []
 
             def on_line(_stream: str, text: str) -> None:
                 lines.append(text)
-                if self.output is not None:
-                    self.output.append(text)
+                self._append_output(text)
 
             def on_done(_rc: int) -> None:
                 def _done() -> bool:
+                    self._untrack_stream(handle)
+                    self._flush_output()
                     run = testing_mod.parse_test_output("".join(lines), project)
                     if self.testpanel is not None:
                         outcomes = {c.name: c.outcome for c in run.cases}
@@ -1712,9 +2075,19 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
                     _chain(index + 1)
                     return False
 
-                GLib.idle_add(_done)
+                try:
+                    GLib.idle_add(_done)
+                except Exception as e:
+                    logger.debug(f"test chain schedule failed: {e!r}")
 
-            dotnet_cli.run_streaming(argv, root, on_line, on_done)
+            try:
+                handle = dotnet_cli.run_streaming(argv, root, on_line, on_done)
+            except Exception as e:
+                logger.debug(f"test chain start failed: {e!r}")
+                if self.testpanel is not None:
+                    self.testpanel.set_status(f"{os.path.basename(project)}: failed to start.")
+                return
+            self._track_stream(handle)
 
         _chain(0)
 

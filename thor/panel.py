@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 try:
     import gi
 
@@ -37,7 +41,7 @@ if Gtk is not None:
             try:
                 self._notebook.set_show_tabs(True)
             except Exception:
-                pass
+                logger.debug("set_show_tabs failed", exc_info=True)
             self.pack_start(self._notebook, True, True, 0)
             self.show_all()
             # Start hidden when empty
@@ -76,10 +80,6 @@ if Gtk is not None:
                     self._sync_visibility()
                     return True
             return False
-
-        # Legacy compat: some plugins call panel.remove(widget)
-        def remove(self, widget: Gtk.Widget) -> None:  # type: ignore[override]
-            self.remove_item(widget)
 
         def activate_item(self, widget: Gtk.Widget) -> bool:
             n = self._notebook.get_n_pages()

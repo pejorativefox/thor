@@ -40,74 +40,26 @@ def attach_builtin_plugins(window, initial_folder: str | None = None) -> None:
 
     # Order matters a bit: side panel first, then bottom, then key handlers.
     # Each attach is soft — log and continue on failure.
+    import importlib
 
-    # Project browser (side panel)
-    try:
-        from thor.project import attach as attach_project
-        attach_project(window, initial_folder=initial_folder)
-        logger.debug("project attached")
-    except Exception as e:
-        logger.exception("project attach failed: %r", e)
-    # Terminal (bottom panel)
-    try:
-        from thor.terminal import attach as attach_terminal
-        attach_terminal(window)
-        logger.debug("terminal attached")
-    except Exception as e:
-        logger.exception("terminal attach failed: %r", e)
-    # C# support (side + bottom, Roslyn optional)
-    try:
-        from thor.csharp import attach as attach_csharp
-        attach_csharp(window, initial_folder=initial_folder)
-        logger.debug("csharp attached")
-    except Exception as e:
-        logger.exception("csharp attach failed: %r", e)
-    try:
-        from thor.fuzzy import attach as attach_fuzzy
-        attach_fuzzy(window)
-        logger.debug("fuzzy attached")
-    except Exception as e:
-        logger.exception("fuzzy attach failed: %r", e)
-    # Document find (Ctrl+F)
-    try:
-        from thor.find import attach as attach_find
-        attach_find(window)
-        logger.debug("find attached")
-    except Exception as e:
-        logger.exception("find attach failed: %r", e)
-    try:
-        from thor.gitdiff import attach as attach_gitdiff
-        attach_gitdiff(window)
-        logger.debug("gitdiff attached")
-    except Exception as e:
-        logger.exception("gitdiff attach failed: %r", e)
-    try:
-        from thor.occurrences import attach as attach_occ
-        attach_occ(window)
-        logger.debug("occurrences attached")
-    except Exception as e:
-        logger.exception("occurrences attach failed: %r", e)
-    try:
-        from thor.autoreload import attach as attach_autoreload
-        attach_autoreload(window)
-        logger.debug("autoreload attached")
-    except Exception as e:
-        logger.exception("autoreload attach failed: %r", e)
-    try:
-        from thor.keybinds import attach as attach_keybinds
-        attach_keybinds(window)
-        logger.debug("keybinds attached")
-    except Exception as e:
-        logger.exception("keybinds attach failed: %r", e)
-    try:
-        from thor.panel_hider import attach as attach_panel_hider
-        attach_panel_hider(window)
-        logger.debug("panel_hider attached")
-    except Exception as e:
-        logger.exception("panel_hider attach failed: %r", e)
-    try:
-        from thor.feature_toggle import attach as attach_feature_toggle
-        attach_feature_toggle(window)
-        logger.debug("feature_toggle attached")
-    except Exception as e:
-        logger.exception("feature_toggle attach failed: %r", e)
+    _features: list[tuple[str, str, dict]] = [
+        ("project", "thor.project", {"initial_folder": initial_folder}),
+        ("terminal", "thor.terminal", {}),
+        ("csharp", "thor.csharp", {"initial_folder": initial_folder}),
+        ("fuzzy", "thor.fuzzy", {}),
+        ("find", "thor.find", {}),
+        ("gitdiff", "thor.gitdiff", {}),
+        ("occurrences", "thor.occurrences", {}),
+        ("autoreload", "thor.autoreload", {}),
+        ("keybinds", "thor.keybinds", {}),
+        ("panel_hider", "thor.panel_hider", {}),
+        ("feature_toggle", "thor.feature_toggle", {}),
+    ]
+    for name, module, kwargs in _features:
+        try:
+            mod = importlib.import_module(module)
+            mod.attach(window, **kwargs)
+            logger.debug("%s attached", name)
+        except Exception as e:
+            logger.debug("%s attach failed", name, exc_info=True)
+            logger.exception("%s attach failed: %r", name, e)

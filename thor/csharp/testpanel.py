@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
 try:
     import gi
 
@@ -13,8 +16,11 @@ except Exception:  # headless
     GObject = Gtk = None  # type: ignore
     _GTK_AVAILABLE = False
 
-(COL_LABEL, COL_PROJECT, COL_FQN, COL_OUTCOME) = range(4)
+(COL_LABEL, COL_PROJECT, COL_FQN, COL_OUTCOME, COL_BASE) = range(5)
 
+#: COL_BASE holds the glyph-free label; the visible COL_LABEL is
+#: ``f"{glyph} {base}"``. Keeps mark_running/apply_results idempotent
+#: without fragile glyph-stripping of the displayed text.
 OUTCOME_GLYPH = {"Passed": "✓", "Failed": "✗", "Skipped": "○", "NotRun": "·", "Running": "…"}
 OUTCOME_ORDER = {"Failed": 0, "Passed": 1, "Skipped": 2, "NotRun": 3, "Running": 4}
 
@@ -60,7 +66,7 @@ else:
             self.status.set_xalign(0.0)
             self.pack_start(self.status, False, False, 0)
 
-            self.store = Gtk.TreeStore(str, str, str, str)
+            self.store = Gtk.TreeStore(str, str, str, str, str)
             self.tree = Gtk.TreeView.new_with_model(self.store)
             self.tree.set_headers_visible(False)
             for index, expand in ((0, False), (1, True)):
@@ -81,7 +87,7 @@ else:
             """Show test projects while discovery runs. Items: (name, csproj path)."""
             self.store.clear()
             for name, csproj in projects:
-                self.store.append(None, [name, csproj, "", "Running"])
+                self.store.append(None, [name, csproj, "", "Running", name])
             self.tree.expand_all()
             self.set_status(f"Discovering tests in {len(projects)} project(s)…")
 
@@ -90,9 +96,10 @@ else:
             total = 0
             for project, names in sorted(tests_by_project.items()):
                 short = project.split("/")[-1]
-                proj_iter = self.store.append(None, [f"{short} ({len(names)})", project, "", "NotRun"])
+                proj_base = f"{short} ({len(names)})"
+                proj_iter = self.store.append(None, [proj_base, project, "", "NotRun", proj_base])
                 for name in sorted(names):
-                    self.store.append(proj_iter, [f"· {name}", project, name, "NotRun"])
+                    self.store.append(proj_iter, [f"· {name}", project, name, "NotRun", name])
                     total += 1
             self.tree.expand_all()
             self.set_status(f"{total} test(s) in {len(tests_by_project)} project(s).")
@@ -100,8 +107,8 @@ else:
         def set_status(self, text: str) -> None:
             try:
                 self.status.set_text(text)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"testpanel status failed: {e!r}")
 
         def mark_running(self, project: str, fqn: str | None = None) -> None:
             def _walk(tree_iter):
@@ -110,9 +117,8 @@ else:
                     frow = self.store.get_value(tree_iter, 2)
                     if prow == project and (fqn is None or frow == fqn or not frow):
                         glyph = OUTCOME_GLYPH["Running"]
-                        label = self.store.get_value(tree_iter, 0)
-                        base = label[2:] if label[:1] in "✓✗○·…" and label[1:2] == " " else label
-                        self.store.set(tree_iter, 0, f"{glyph} {base}", 3, "Running")
+                        base = self.store.get_value(tree_iter, COL_BASE) or ""
+                        self.store.set(tree_iter, COL_LABEL, f"{glyph} {base}", COL_OUTCOME, "Running")
                     child = self.store.iter_children(tree_iter)
                     if child:
                         _walk(child)
@@ -130,9 +136,8 @@ else:
                     if prow == project and frow and frow in outcomes:
                         outcome = outcomes[frow]
                         glyph = OUTCOME_GLYPH.get(outcome, "?")
-                        label = self.store.get_value(tree_iter, 0)
-                        base = label[2:] if label[:1] in "✓✗○·…" and label[1:2] == " " else label
-                        self.store.set(tree_iter, 0, f"{glyph} {base}", 3, outcome)
+                        base = self.store.get_value(tree_iter, COL_BASE) or ""
+                        self.store.set(tree_iter, COL_LABEL, f"{glyph} {base}", COL_OUTCOME, outcome)
                     child = self.store.iter_children(tree_iter)
                     if child:
                         _walk(child)

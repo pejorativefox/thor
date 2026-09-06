@@ -11,10 +11,7 @@ import thor.project as projectmode
 
 IS_THOR = True  # thor standalone, skip plugin UI tests
 
-def _touch(path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write("x")
+from conftest import _touch  # shared helper (see tests/conftest.py)
 
 
 def test_has_project_markers():

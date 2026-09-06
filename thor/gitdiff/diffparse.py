@@ -6,6 +6,7 @@ Line numbers are 0-based new-file lines, matching Gtk TextBuffer lines.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -13,6 +14,7 @@ import subprocess
 import tempfile
 import time
 
+logger = logging.getLogger(__name__)
 GIT_TIMEOUT_S = 10
 
 # Same palette as the project-mode tree (VS Code gitDecoration defaults).
@@ -101,6 +103,9 @@ def file_status_short(repo_root: str, path: str, timeout: int = GIT_TIMEOUT_S) -
     """Two-char porcelain status for one file ('' when clean/unknown).
 
     '??' = untracked, '!!' would need --ignored (never returned here).
+    Parses the first NUL-separated record only; renames (``R  old\\0new\\0``)
+    and directory queries yielding multiple records no longer leak the
+    second record's bytes into the status.
     """
     try:
         if not repo_root or not os.path.isdir(repo_root) or not path:
@@ -131,10 +136,14 @@ def file_status_short(repo_root: str, path: str, timeout: int = GIT_TIMEOUT_S) -
     if proc.returncode != 0 or not proc.stdout:
         return ""
     try:
-        # entries: b"XY path\x00"; path may itself contain spaces, so only
+        # -z records: b"XY path\x00" (rename: b"R  old\x00new\x00"). Only the
+        # first record belongs to this query; anything after the first NUL
+        # is a second file or a rename target.
+        first = proc.stdout.split(b"\0", 1)[0]
+        # entries: b"XY path"; path may itself contain spaces, so only
         # the first two bytes + blank are the status.
-        if len(proc.stdout) >= 3 and proc.stdout[2:3] == b" ":
-            return proc.stdout[:2].decode("ascii", "replace")
+        if len(first) >= 3 and first[2:3] == b" ":
+            return first[:2].decode("ascii", "replace")
     except Exception:
         pass
     return ""
@@ -184,6 +193,10 @@ def get_buffer_diff_text(
 
     Lets the gutter track unsaved edits: hunk `+` lines refer to buffer
     lines. '' on any failure (e.g. path not in HEAD).
+
+    Trivial cases stay in-process (no fork/tempdir): byte-identical or
+    trailing-newline-only differences return '' directly. Anything real
+    still forks ``git diff --no-index`` via a tempdir (logged at debug).
     """
     try:
         if not repo_root or not os.path.isdir(repo_root) or not relpath:
@@ -201,7 +214,8 @@ def get_buffer_diff_text(
             timeout=timeout,
             check=False,
         )
-    except Exception:
+    except Exception as e:
+        logger.debug("git show %s failed: %r", relpath, e, exc_info=True)
         return ""
     if old.returncode != 0:
         # Staged-new / renamed-not-in-HEAD: no HEAD blob to diff against.
@@ -253,6 +267,16 @@ def get_buffer_diff_text(
         new_bytes = new_text.encode("utf-8", "replace")
     except Exception:
         return ""
+    # In-process trivial check: identical or trailing-newline-only edits
+    # (GtkSource keeps the final newline implicit) mean "no gutter diff".
+    # Avoids a mkdtemp + fork per keystroke for the common clean case.
+    try:
+        old_bytes = old.stdout or b""
+        if new_bytes == old_bytes or new_bytes + b"\n" == old_bytes or new_bytes == old_bytes + b"\n":
+            return ""
+    except Exception as e:
+        logger.debug("trivial diff check failed: %r", e, exc_info=True)
+    logger.debug("buffer diff forks git diff --no-index for %s", relpath)
     tmpdir = None
     try:
         tmpdir = tempfile.mkdtemp(prefix="thor-gutter-")

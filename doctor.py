@@ -156,10 +156,5 @@ def _thor_processes() -> list[str]:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Thor doctor")
-    parser.add_argument("--help", action="store_true", help="show help")
-    args = parser.parse_args()
-    if args.help:
-        parser.print_help()
-        sys.exit(0)
+    argparse.ArgumentParser(description="Thor doctor").parse_args()
     sys.exit(main())

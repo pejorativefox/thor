@@ -36,12 +36,12 @@ def setup_logging(level: int | None = None) -> None:
         handler.setFormatter(formatter)
         thor_logger.addHandler(handler)
     thor_logger.setLevel(level)
-    thor_logger.propagate = False
+    thor_logger.propagate = True
 
 
 try:
     setup_logging()
 except Exception:
-    pass
+    logging.getLogger(__name__).debug("setup_logging failed", exc_info=True)
 
 __all__ = ["setup_logging"]

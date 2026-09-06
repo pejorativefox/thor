@@ -158,11 +158,26 @@ else:
             super().__init__()
             self._window = None
             self.framework_completion = False
-            self._tracked: dict[int, dict] = {}
-            self._change_sources: dict[int, int] = {}
-            self._tab_states: dict[int, str] = {}
-            self._pending_tooltip = None
+            # Keyed by the doc/tab object itself (held strongly via the
+            # record), never by hash(doc): hashes can collide across
+            # buffers and are not a stable identity.
+            self._tracked: dict = {}
+            self._change_sources: dict = {}
+            self._tab_states: dict = {}
+            # Hover tooltips keyed by request id; stale responses are
+            # dropped instead of overwriting a newer tooltip.
+            self._tooltip_seq = 0
+            self._last_hover_seq = 0
+            self._pending_tooltips: dict = {}
 
+        @staticmethod
+        def _key(obj):
+            """Stable dict key for a doc/tab: the object itself (strong ref)."""
+            try:
+                hash(obj)
+            except Exception:
+                return ("id", id(obj))
+            return obj
         # -- lifecycle ---------------------------------------------------
         def attach(self, window) -> None:
             self._window = window
@@ -196,11 +211,10 @@ else:
                 doc = view.get_buffer()
             except Exception:
                 return
-            key = hash(doc)
+            key = self._key(doc)
             if key in self._tracked:
                 return
             record = {"view": view, "doc": doc, "ids": []}
-
             def _connect(obj, signal, handler):
                 try:
                     record["ids"].append((obj, obj.connect(signal, handler)))
@@ -213,8 +227,8 @@ else:
             _connect(view, "populate-popup", lambda v, m: self._on_populate_popup(v, m, doc))
             try:
                 view.set_has_tooltip(True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"ViewTracker set_has_tooltip failed: {e!r}")
             _connect(view, "query-tooltip", lambda v, x, y, kb, t: self._on_query_tooltip(v, x, y, kb, t, doc))
             self._tracked[key] = record
 
@@ -243,7 +257,7 @@ else:
             except Exception:
                 return
             path = doc_path(doc)
-            key = hash(doc)
+            key = self._key(doc)
             record = self._tracked.pop(key, None)
             if record is not None:
                 self._untrack_record(record)
@@ -276,10 +290,7 @@ else:
                 state = tab_state_name(tab.get_state())
             except Exception:
                 return
-            try:
-                key = hash(tab)
-            except Exception:
-                return
+            key = self._key(tab)
             previous = self._tab_states.get(key, "")
             self._tab_states[key] = state
             if is_save_completed(previous, state):
@@ -297,19 +308,19 @@ else:
             path = doc_path(doc)
             if not path:
                 return
-            key = hash(doc)
+            key = self._key(doc)
             old = self._change_sources.pop(key, None)
             if old is not None:
                 try:
                     GLib.source_remove(old)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"ViewTracker drop pending change failed: {e!r}")
             try:
                 self._change_sources[key] = GLib.timeout_add(400, self._emit_changed, key, path)
             except Exception:
                 self.emit("doc-changed", path)
 
-        def _emit_changed(self, key: int, path: str) -> bool:
+        def _emit_changed(self, key, path: str) -> bool:
             self._change_sources.pop(key, None)
             self.emit("doc-changed", path)
             return False
@@ -449,23 +460,44 @@ else:
             path = doc_path(doc)
             if not path:
                 return False
-            self._pending_tooltip = tooltip
+            self._tooltip_seq += 1
+            seq = self._tooltip_seq
+            self._last_hover_seq = seq
+            self._pending_tooltips[seq] = tooltip
             try:
                 tooltip.set_text("Loading…")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"ViewTracker tooltip placeholder failed: {e!r}")
             self.emit("hover-request", path, line, char)
             return True
 
-        def show_hover_text(self, text: str) -> None:
-            tooltip = self._pending_tooltip
-            self._pending_tooltip = None
+        def last_hover_seq(self) -> int:
+            """Id of the most recent hover request (pairs responses)."""
+            return self._last_hover_seq
+
+        def show_hover_text(self, text: str, seq: int | None = None) -> None:
+            """Deliver hover text; responses for older requests are dropped.
+
+            ``seq`` pairs the response with its request (see
+            :meth:`last_hover_seq`). Without it, the newest pending tooltip
+            wins and anything older is discarded as stale.
+            """
+            if seq is None:
+                if not self._pending_tooltips:
+                    return
+                seq = max(self._pending_tooltips)
+            tooltip = self._pending_tooltips.pop(seq, None)
+            # Whatever remains below seq is older than this delivery: drop
+            # it so a late answer cannot overwrite newer content.
+            for old in [s for s in self._pending_tooltips if s < seq]:
+                self._pending_tooltips.pop(old, None)
             if tooltip is None:
+                logger.debug(f"hover response dropped (stale seq={seq})")
                 return
             try:
                 if text:
                     tooltip.set_text(text)
                 else:
                     tooltip.set_text("No documentation available.")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"ViewTracker show hover failed: {e!r}")

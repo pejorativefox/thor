@@ -96,12 +96,12 @@ def test_roslyn_manager_death_resets_state_and_reports():
 def test_roslyn_manager_intentional_stop_is_not_an_error():
     errors = []
     mgr = roslyn.RoslynManager(on_error=errors.append)
-    t = lsp_transport.LspTransport(["sleep", "30"], lambda _m: None,
+    t = lsp_transport.LspTransport(["sleep", "5"], lambda _m: None,
                                    on_exit=mgr._on_transport_exit)
     mgr.transport = t
     mgr.state = "ready"
     t.start()
     mgr.stop()  # intentional: must not report an error
-    time.sleep(0.5)
+    assert _wait_for(lambda: not t.running), "transport did not stop"
     assert mgr.state == "stopped"
     assert errors == [], errors

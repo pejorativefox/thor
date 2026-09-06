@@ -63,6 +63,10 @@ MAX_PROPOSALS = 300
 #: How long a complete list may be reused while the user extends the same
 #: prefix on the same line (framework filters locally, like VSCode).
 CACHE_TTL_S = 10.0
+#: Upper bound for stale (post-timeout) completion responses kept for the
+#: next keystroke. Oldest entries are dropped first; prevents unbounded
+#: growth when the server consistently answers late.
+LATE_RESPONSE_MAX = 32
 
 #: Interactive delay (ms). VSCode feels instant; the previous 150ms felt
 #: laggy. The framework still throttles while typing.
@@ -203,18 +207,27 @@ def cache_valid(
     path: str,
     line: int,
     prefix: str,
+    char: int | None = None,
+    offset: int | None = None,
     now: float | None = None,
 ) -> bool:
     """Whether a cached list may back a populate without re-querying.
 
     VSCode reuses a *complete* list while the user extends the same
     prefix on the same line (local fuzzy filter). Anything else —
-    line change, trigger character (prefix reset), expiry, or
-    ``isIncomplete`` — needs a fresh request.
+    line/column change, trigger character (prefix reset), expiry, or
+    ``isIncomplete`` — needs a fresh request. ``char``/``offset`` are
+    optional so older callers keep working; when given they must match
+    the entry, otherwise a same-prefix edit elsewhere on the line would
+    reuse a stale list.
     """
     if entry is None or not entry.items:
         return False
     if entry.path != path or entry.line != line:
+        return False
+    if char is not None and entry.char != char:
+        return False
+    if offset is not None and entry.offset != offset:
         return False
     if entry.is_incomplete:
         return False
@@ -329,12 +342,14 @@ class _RoslynCompletionProviderBase:
 
     def _proposals_for(self, items: list) -> list:
         # VSCode highlights the preselected item; the framework selects
-        # the first row, so the preselected item leads (stable).
+        # the first row, so the preselected item leads (stable). Sort the
+        # FULL list first, then truncate: truncating first could drop the
+        # preselected item (or better matches) past MAX_PROPOSALS.
         try:
             ordered = sorted(
-                list(items[:MAX_PROPOSALS]),
+                list(items),
                 key=lambda it: (0 if bool(getattr(it, "preselect", False)) else 1),
-            )
+            )[:MAX_PROPOSALS]
         except Exception:
             ordered = list(items[:MAX_PROPOSALS])
         out = []
@@ -387,7 +402,7 @@ class _RoslynCompletionProviderBase:
                   f"prefix={prefix!r} user={user_requested}")
             with self._lock:
                 entry = self._cache.get(path)
-                hit = cache_valid(entry, path, line, prefix)
+                hit = cache_valid(entry, path, line, prefix, char=char, offset=offset)
                 items = list(entry.items) if (hit and entry is not None) else []
                 retrigger = bool(entry is not None and entry.is_incomplete)
                 self._seq += 1
@@ -624,31 +639,53 @@ class _RoslynCompletionProviderBase:
                         except Exception as e:
                             logger.debug(f"roslyn suffix insert failed: {e!r}")
                 # Same-document additionalTextEdits (e.g. brace
-                # adjustments). Applied after the main edit by line/char
-                # so top-of-file inserts keep their position.
+                # adjustments). The main insert above shifted every offset
+                # after it, so ranges are re-anchored against the CURRENT
+                # buffer text and verified before applying: out-of-bounds
+                # ranges, reversed ranges, and edits overlapping the
+                # just-applied region are dropped with a debug log rather
+                # than corrupting the buffer.
+                try:
+                    applied_start = start.get_offset()
+                    applied_end = applied_start + len(insert)
+                except Exception:
+                    applied_start = applied_end = -1
                 for edit in getattr(proposal, "additional_edits", None) or []:
                     try:
                         rng = (edit or {}).get("range") or {}
                         s = rng.get("start", {})
                         e = rng.get("end", {})
-                        s_it = buf.get_iter_at_line_offset(
-                            max(0, int(s.get("line", 0))), max(0, int(s.get("character", 0)))
-                        )
-                        e_it = buf.get_iter_at_line_offset(
-                            max(0, int(e.get("line", 0))), max(0, int(e.get("character", 0)))
-                        )
+                        cur_text = self._buffer_text(buf)
+                        try:
+                            s_off = intel.position_to_offset(
+                                cur_text, max(0, int(s.get("line", 0))),
+                                max(0, int(s.get("character", 0))))
+                            e_off = intel.position_to_offset(
+                                cur_text, max(0, int(e.get("line", 0))),
+                                max(0, int(e.get("character", 0))))
+                        except (TypeError, ValueError) as conv_e:
+                            logger.debug(f"roslyn additional edit dropped (bad range): {conv_e!r}")
+                            continue
+                        if not (0 <= s_off <= e_off <= len(cur_text)):
+                            logger.debug(
+                                "roslyn additional edit dropped "
+                                f"(range {s_off}-{e_off} outside 0-{len(cur_text)})")
+                            continue
+                        if applied_start >= 0 and s_off < applied_end and e_off > applied_start:
+                            logger.debug("roslyn additional edit dropped (overlaps main edit)")
+                            continue
+                        s_it = buf.get_iter_at_offset(s_off)
+                        e_it = buf.get_iter_at_offset(e_off)
                         if e_it.compare(s_it) < 0:
                             continue
                         # Skip edits overlapping the just-applied region.
                         buf.delete(s_it, e_it)
                         buf.insert(
-                            buf.get_iter_at_line_offset(
-                                max(0, int(s.get("line", 0))),
-                                max(0, int(s.get("character", 0))),
-                            ),
+                            buf.get_iter_at_offset(s_off),
                             str((edit or {}).get("newText", "")),
                         )
-                    except Exception:
+                    except Exception as edit_e:
+                        logger.debug(f"roslyn additional edit failed: {edit_e!r}")
                         continue
             finally:
                 buf.end_user_action()
@@ -696,12 +733,25 @@ class _RoslynCompletionProviderBase:
         """Legacy blocking fetch (deprecated: populate is async now).
 
         Kept for unit tests and the non-framework fallback path. New
-        code should rely on ``do_populate`` + cache instead.
+        code should rely on ``do_populate`` + cache instead. Must NOT run
+        on the GTK main thread: ``event.wait`` would freeze the UI.
         """
         prefix, _s = intel.prefix_at(text, offset)
+        try:
+            on_main = threading.current_thread() is threading.main_thread()
+        except Exception:
+            on_main = False
+        if on_main:
+            # Blocking wait on the UI thread freezes the editor; production
+            # code must use do_populate + async request instead. Warn and
+            # fall through: this legacy shim is only kept for unit tests
+            # and the headless fallback path (both main-thread).
+            logger.warning(
+                "fetch_sync on the main thread blocks the UI; "
+                "use do_populate + async request instead.")
         with self._lock:
             entry = self._cache.get(path)
-            if cache_valid(entry, path, line, prefix) and entry is not None:
+            if cache_valid(entry, path, line, prefix, char=char, offset=offset) and entry is not None:
                 return list(entry.items)
             if self._legacy_key == (path, line) and self._legacy_items:
                 return list(self._legacy_items)
@@ -721,6 +771,10 @@ class _RoslynCompletionProviderBase:
             with self._lock:
                 if box.get("expired"):
                     self._late.append(((path, line), items))
+                    # Bound the stash: a chronically slow server must not
+                    # grow this list without limit; oldest goes first.
+                    while len(self._late) > LATE_RESPONSE_MAX:
+                        self._late.pop(0)
                 else:
                     box["items"] = items
                 self._cache[path] = _CacheEntry(

@@ -322,19 +322,32 @@ class GitDiffManager:
         except Exception:
             pass
         try:
+            for monitor, hid in list(getattr(self, "_git_monitor_ids", [])):
+                try:
+                    monitor.disconnect(hid)
+                except Exception as e:
+                    logger.debug("git monitor disconnect failed: %r", e, exc_info=True)
+                try:
+                    monitor.cancel()
+                except Exception as e:
+                    logger.debug("git monitor cancel failed: %r", e, exc_info=True)
+        except Exception as e:
+            logger.debug("git monitor teardown failed: %r", e, exc_info=True)
+        try:
             for monitor in list(getattr(self, "_git_monitors", [])):
                 try:
                     monitor.cancel()
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    logger.debug("git monitor cancel failed: %r", e, exc_info=True)
+        except Exception as e:
+            logger.debug("git monitor cancel loop failed: %r", e, exc_info=True)
         try:
             self._git_monitors = []
+            self._git_monitor_ids = []
             self._root_monitors = {}
             self._in_flight = set()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("git state reset failed: %r", e, exc_info=True)
         try:
             self._generations.clear()
             self._pending_paths.clear()
@@ -534,24 +547,75 @@ class GitDiffManager:
     def _monitor_root(self, root: str) -> None:
         """Watch .git/HEAD + .git/index for external changes (soft-only)."""
         try:
-            if not root or root in self._root_monitors:
+            if not root:
                 return
             if Gio is None:
                 return
+            if root in self._root_monitors:
+                return
+            # Prune roots no longer backing any open file so monitors do not
+            # accumulate across repo switches; disconnect their signals first.
+            try:
+                live_dirs = set()
+                for p in list(self._generations):
+                    try:
+                        live_dirs.add(os.path.dirname(p))
+                    except Exception:
+                        continue
+                for old_root in list(self._root_monitors):
+                    if old_root == root:
+                        continue
+                    still_live = False
+                    try:
+                        for d in live_dirs:
+                            try:
+                                if os.path.commonpath([d, old_root]) == old_root or d.startswith(old_root + os.sep):
+                                    still_live = True
+                                    break
+                            except Exception:
+                                continue
+                    except Exception:
+                        still_live = True
+                    if not still_live:
+                        self._drop_root_monitor(old_root)
+            except Exception as e:
+                logger.debug("git monitor prune failed: %r", e, exc_info=True)
             monitors = []
+            handler_ids: list = []
             for name in ("HEAD", "index"):
                 try:
                     watched = Gio.File.new_for_path(os.path.join(root, ".git", name))
                     monitor = watched.monitor_file(Gio.FileMonitorFlags.NONE, None)
-                    monitor.connect("changed", self._on_git_dir_changed)
+                    hid = monitor.connect("changed", self._on_git_dir_changed)
+                    handler_ids.append((monitor, hid))
                     monitors.append(monitor)
                 except Exception as e:
                     logger.debug(f"git monitor {name} failed: {e!r}")
             if monitors:
                 self._root_monitors[root] = monitors
                 self._git_monitors.extend(monitors)
+                try:
+                    self._git_monitor_ids = getattr(self, "_git_monitor_ids", [])
+                    self._git_monitor_ids.extend(handler_ids)
+                except Exception as e:
+                    logger.debug("monitor id stash failed: %r", e, exc_info=True)
         except Exception as e:
             logger.debug(f"git monitor setup failed: {e!r}")
+
+    def _drop_root_monitor(self, root: str) -> None:
+        """Disconnect + cancel monitors for *root* (no accumulation)."""
+        mons = self._root_monitors.pop(root, [])
+        for mon in mons:
+            try:
+                mon.cancel()
+            except Exception as e:
+                logger.debug("git monitor cancel failed: %r", e, exc_info=True)
+            try:
+                self._git_monitors.remove(mon)
+            except ValueError:
+                pass
+            except Exception as e:
+                logger.debug("git monitor list drop failed: %r", e, exc_info=True)
 
     def _on_git_dir_changed(self, *args) -> None:
         try:

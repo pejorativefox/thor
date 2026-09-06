@@ -15,7 +15,23 @@ import os
 
 PANEL_TITLE = "Terminal"
 PANEL_ICONS = ("utilities-terminal", "terminal", "dialog-information")
-SHELL_ARGV = ["/bin/bash"]
+
+
+def _resolve_shell_argv() -> list[str]:
+    """Shell argv for new terminals: ``$SHELL`` with ``/bin/bash`` fallback.
+
+    Honors the user's login shell; falls back to ``/bin/bash`` when
+    ``$SHELL`` is unset, empty, or not an absolute executable path.
+    """
+    shell = (os.environ.get("SHELL") or "").strip()
+    if shell and os.path.isabs(shell) and os.access(shell, os.X_OK):
+        return [shell]
+    if shell:
+        logger.debug("ignoring unusable $SHELL=%r, falling back to /bin/bash", shell)
+    return ["/bin/bash"]
+
+
+SHELL_ARGV = _resolve_shell_argv()
 BASE_LABEL = "Terminal"
 
 SCHEME_SETTINGS_SCHEMA = "org.x.editor.preferences.editor"
@@ -361,6 +377,7 @@ if Gtk is not None:
         def __init__(self) -> None:
             super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
             self._labels: list[str] = []
+            self._pids: dict = {}
             self.notebook = None
             self._fallback = None
 
@@ -477,55 +494,97 @@ if Gtk is not None:
                 GLib.idle_add(term.grab_focus)
             except Exception:
                 pass
-
         def _spawn(self, term, page: int) -> None:
+            argv = list(_resolve_shell_argv())
+            pid = None
+            # Prefer spawn_async (non-blocking) when the VTE build offers it;
+            # fall back to spawn_sync otherwise. Documented here because the
+            # async signature varies across VTE versions, so any failure
+            # drops through to the stable sync path.
+            spawn_async = getattr(term, "spawn_async", None)
+            if callable(spawn_async):
+                try:
+                    spawn_async(
+                        Vte.PtyFlags.DEFAULT,
+                        None,
+                        argv,
+                        None,
+                        GLib.SpawnFlags.DEFAULT,
+                        None,
+                        None,
+                        -1,
+                        None,
+                        lambda _t, _p, _e: None,
+                        None,
+                    )
+                    # Async launch does not return a pid synchronously;
+                    # record a placeholder so close still destroys the widget.
+                    pid = -1
+                except Exception as e:
+                    logger.debug("spawn_async failed, trying spawn_sync: %r", e, exc_info=True)
+                    pid = None
+            if pid is None:
+                try:
+                    # working_directory=None inherits cwd.
+                    ok, pid = term.spawn_sync(
+                        Vte.PtyFlags.DEFAULT,
+                        None,
+                        argv,
+                        None,
+                        GLib.SpawnFlags.DEFAULT,
+                        None,
+                        None,
+                        None,
+                    )
+                    if not ok:
+                        raise RuntimeError("spawn_sync returned False")
+                except Exception as e:
+                    logger.debug(f"terminal spawn failed: {e!r}")
+                    try:
+                        self._set_tab_text(page, f"{self._labels[page]} (failed)")
+                    except Exception as e2:
+                        logger.debug("tab failed label failed: %r", e2, exc_info=True)
+                    logger.error(f"failed to launch {' '.join(argv)}: {e!r}")
+                    return
             try:
-                # working_directory=None inherits cwd.
-                ok, _pid = term.spawn_sync(
-                    Vte.PtyFlags.DEFAULT,
-                    None,
-                    list(SHELL_ARGV),
-                    None,
-                    GLib.SpawnFlags.DEFAULT,
-                    None,
-                    None,
-                    None,
-                )
-                if not ok:
-                    raise RuntimeError("spawn_sync returned False")
+                self._pids[id(term)] = int(pid) if pid is not None else None
             except Exception as e:
-                logger.debug(f"terminal spawn failed: {e!r}")
-                try:
-                    self._set_tab_text(page, f"{self._labels[page]} (failed)")
-                except Exception:
-                    pass
-                try:
-                    logger.error(f"failed to launch {' '.join(SHELL_ARGV)}: {e!r}")
-                except Exception:
-                    pass
+                logger.debug("pid track failed: %r", e, exc_info=True)
+
+        def _forget_pid(self, term) -> int | None:
+            try:
+                return self._pids.pop(id(term), None)
+            except Exception as e:
+                logger.debug("pid forget failed: %r", e, exc_info=True)
+                return None
+
+        def _kill_pid(self, pid: int | None) -> None:
+            if pid is None:
+                return
+            try:
+                os.kill(pid, 15)
+            except Exception as e:
+                logger.debug("kill child %s failed: %r", pid, e, exc_info=True)
 
         def _on_child_exited(self, term, _status) -> None:
+            # No auto-respawn: an exited shell stays visibly "(exited)" so a
+            # fast-crashing child cannot spin the UI into an infinite
+            # respawn loop. The user reaps it with Close / + New.
+            self._forget_pid(term)
             try:
                 page = self.notebook.page_num(term)
-            except Exception:
+            except Exception as e:
+                logger.debug("child-exited page lookup failed: %r", e, exc_info=True)
                 return
             if page < 0:
                 return
             try:
                 old = self._labels[page]
-                self._labels[page] = f"{old} (exited)"
-                self._set_tab_text(page, self._labels[page])
-            except Exception:
-                pass
-            # Respawn a fresh shell in place so the tab stays usable.
-            self._spawn(term, page)
-            try:
-                old = self._labels[page]
-                base = old.replace(" (exited)", "").replace(" (failed)", "")
-                self._labels[page] = base
-                self._set_tab_text(page, base)
-            except Exception:
-                pass
+                if "(exited)" not in old:
+                    self._labels[page] = f"{old} (exited)"
+                    self._set_tab_text(page, self._labels[page])
+            except Exception as e:
+                logger.debug("exited label failed: %r", e, exc_info=True)
 
         def _on_button_press(self, term, event) -> bool:
             try:
@@ -583,12 +642,19 @@ if Gtk is not None:
                 return
             try:
                 term = self.notebook.get_nth_page(page)
-            except Exception:
+            except Exception as e:
+                logger.debug("close page lookup failed: %r", e, exc_info=True)
                 return
+            # Ensure the child dies with the tab: SIGTERM the tracked pid,
+            # then ask the pty to exit, then drop the widget.
+            try:
+                self._kill_pid(self._forget_pid(term))
+            except Exception as e:
+                logger.debug("close kill failed: %r", e, exc_info=True)
             try:
                 term.feed_child(b"exit\n", -1)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("close feed exit failed: %r", e, exc_info=True)
             try:
                 self.notebook.remove_page(page)
             except Exception as e:
@@ -596,12 +662,12 @@ if Gtk is not None:
                 return
             try:
                 del self._labels[page]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("close label drop failed: %r", e, exc_info=True)
             try:
                 term.destroy()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("close destroy failed: %r", e, exc_info=True)
             if self.notebook.get_n_pages() == 0:
                 self.new_terminal()
 
@@ -763,6 +829,53 @@ def attach(window) -> object | None:
                 except Exception as e:
                     logger.debug(f"focus failed: {e!r}")
 
+    def _terminal_has_focus() -> bool:
+        try:
+            focus = window.get_focus() if hasattr(window, "get_focus") else None
+        except Exception as e:
+            logger.debug("focus query failed: %r", e, exc_info=True)
+            return False
+        if focus is None or panel is None:
+            return False
+        try:
+            # focus inside the panel (terminal or its toolbar)?
+            ancestor = focus
+            for _ in range(6):
+                if ancestor is panel:
+                    return True
+                ancestor = ancestor.get_parent() if hasattr(ancestor, "get_parent") else None
+                if ancestor is None:
+                    break
+        except Exception as e:
+            logger.debug("focus walk failed: %r", e, exc_info=True)
+        return False
+
+    def _focus_editor() -> None:
+        try:
+            view = window.get_active_view() if hasattr(window, "get_active_view") else None
+        except Exception as e:
+            logger.debug("active view lookup failed: %r", e, exc_info=True)
+            view = None
+        if view is not None:
+            try:
+                view.grab_focus()
+                return
+            except Exception as e:
+                logger.debug("editor focus failed: %r", e, exc_info=True)
+        try:
+            window.grab_focus()
+        except Exception as e:
+            logger.debug("window focus failed: %r", e, exc_info=True)
+
+    def _toggle_focus() -> None:
+        # Two-way Ctrl+`: terminal -> editor, editor -> terminal.
+        if _terminal_has_focus():
+            logger.debug("key: Ctrl+` focus-editor (toggle back)")
+            _focus_editor()
+        else:
+            logger.debug("key: Ctrl+` focus-terminal")
+            _reveal(focus=True)
+
     def _handle_global(keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
         action = handle_global_key(keyname, ctrl, shift, alt)
         if action == "new":
@@ -770,12 +883,13 @@ def attach(window) -> object | None:
             _new_terminal()
             return True
         if action == "close":
+            # Owned here, NOT window-close: the window must only close when
+            # this handler declines (it never declines Ctrl+Shift+W).
             logger.debug("key: Ctrl+Shift+W close-terminal")
             _close_current()
             return True
         if action == "focus":
-            logger.debug("key: Ctrl+` focus-terminal")
-            _reveal(focus=True)
+            _toggle_focus()
             return True
         return False
 

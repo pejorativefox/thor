@@ -88,18 +88,18 @@ def test_get_git_statuses_real_repo():
         pytest.skip("no git")
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(["git", "init"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         subprocess.run(["git", "config", "user.email", "t@t.t"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         subprocess.run(["git", "config", "user.name", "t"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         tracked = os.path.join(tmp, "tracked.txt")
         with open(tracked, "w") as f:
             f.write("one")
         subprocess.run(["git", "add", "tracked.txt"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         subprocess.run(["git", "commit", "-m", "init"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         with open(tracked, "w") as f:
             f.write("two")
         untracked = os.path.join(tmp, "new.txt")
@@ -132,7 +132,7 @@ def test_find_git_root_inside_repo():
         pytest.skip("no git")
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(["git", "init"], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         sub = os.path.join(tmp, "a", "b")
         os.makedirs(sub)
         assert gitstatus.find_git_root(sub) == os.path.abspath(tmp)

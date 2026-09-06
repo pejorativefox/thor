@@ -88,27 +88,39 @@ def find_project_root(window) -> str | None:
     """Locate project-mode's loaded folder root via the side panel.
 
     Duck-typed: accepts any widget exposing a non-empty ``_root_dir``
-    string (ProjectBrowser). Walks one level of container nesting.
-    Returns an absolute directory path or None.
+    string (ProjectBrowser). Breadth-first walk of the side-panel
+    subtree (up to 256 widgets, arbitrary depth) so reorganised
+    containers still resolve. Returns an absolute directory path or None.
     """
     try:
         side = window.get_side_panel()
-    except Exception:
+    except Exception as e:
+        logger.debug("find_project_root: no side panel: %r", e, exc_info=True)
         return None
     if side is None:
         return None
     try:
         children = list(side.get_children())
-    except Exception:
+    except Exception as e:
+        logger.debug("find_project_root children failed: %r", e, exc_info=True)
         return None
     queue = list(children)
+    seen_ids: set[int] = set()
     seen = 0
-    while queue and seen < 64:
+    while queue and seen < 256:
         widget = queue.pop(0)
         seen += 1
         try:
-            root = getattr(widget, "_root_dir", None)
+            wid = id(widget)
         except Exception:
+            wid = -1
+        if wid in seen_ids:
+            continue
+        seen_ids.add(wid)
+        try:
+            root = getattr(widget, "_root_dir", None)
+        except Exception as e:
+            logger.debug("find_project_root attr failed: %r", e, exc_info=True)
             root = None
         if isinstance(root, str) and root and os.path.isdir(root):
             return os.path.abspath(root)
@@ -131,10 +143,15 @@ if Gtk is not None:
 
         def __init__(self, parent=None) -> None:
             super().__init__(title="Open File in Project")
+            self._destroyed = False
+            try:
+                self.connect("destroy", lambda *_a: setattr(self, "_destroyed", True))
+            except Exception as e:
+                logger.debug("fuzzy destroy hook failed: %r", e, exc_info=True)
             try:
                 self.set_modal(True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("fuzzy set_modal failed: %r", e, exc_info=True)
             if parent is not None:
                 try:
                     self.set_transient_for(parent)
@@ -178,6 +195,8 @@ if Gtk is not None:
         # -- data ------------------------------------------------------
         def set_files(self, items: list[tuple[str, str]]) -> None:
             """items: (display, path) pairs."""
+            if getattr(self, "_destroyed", False):
+                return
             self._files = list(items)
             self._labels = {display: path for display, path in self._files}
             # Score the relative display paths, not the absolute ones: the
@@ -193,11 +212,13 @@ if Gtk is not None:
             self._refilter()
             try:
                 self._entry.grab_focus()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("fuzzy grab_focus failed: %r", e, exc_info=True)
 
         def set_indexing(self, on: bool) -> None:
             """Show or clear the background-indexing indicator."""
+            if getattr(self, "_destroyed", False):
+                return
             self._indexing = bool(on)
             try:
                 query = self._entry.get_text()
@@ -210,6 +231,8 @@ if Gtk is not None:
             self._update_status(shown, len(self._files), query)
 
         def _update_status(self, shown: int, total: int, query: str) -> None:
+            if getattr(self, "_destroyed", False):
+                return
             if total == 0 and not self._indexing:
                 text = "No files found"
             elif shown == 0 and query:
@@ -220,30 +243,51 @@ if Gtk is not None:
                 text = f"Indexing…  {text}" if text else "Indexing…"
             try:
                 self._status.set_text(text)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("fuzzy status failed: %r", e, exc_info=True)
 
         def _refilter(self) -> None:
-            query = self._entry.get_text()
+            # Guard use-after-destroy: background indexing completes via
+            # idle_add after the dialog may have been closed.
+            if getattr(self, "_destroyed", False):
+                return
+            try:
+                query = self._entry.get_text()
+            except Exception as e:
+                logger.debug("fuzzy query read failed: %r", e, exc_info=True)
+                return
             labels = self._labels
-            displays = [display for display, _path in self._files]
-            self._store.clear()
+            try:
+                self._store.clear()
+            except Exception as e:
+                logger.debug("fuzzy store clear failed: %r", e, exc_info=True)
+                return
             try:
                 if self._index is not None:
-                    ranked = self._index.search(query, limit=MAX_ROWS)
+                    # Single DP per candidate: scores AND positions come back
+                    # together; never re-run fuzzy_match per row.
+                    for display, _score, positions in self._index.search_scored(query, limit=MAX_ROWS):
+                        if getattr(self, "_destroyed", False):
+                            return
+                        self._store.append(
+                            [display, markup_highlight(display, positions), labels.get(display, display)]
+                        )
                 else:
-                    ranked = fuzzy_find(query, displays, limit=MAX_ROWS)
-                for display in ranked:
-                    positions: list[int] = []
-                    if query.strip():
-                        try:
-                            hit = fuzzy_match(query, display)
-                            positions = list(hit[1]) if hit is not None else []
-                        except Exception:
-                            positions = []
-                    self._store.append(
-                        [display, markup_highlight(display, positions), labels.get(display, display)]
-                    )
+                    displays = [display for display, _path in self._files]
+                    for display in fuzzy_find(query, displays, limit=MAX_ROWS):
+                        if getattr(self, "_destroyed", False):
+                            return
+                        positions: list[int] = []
+                        if query.strip():
+                            try:
+                                hit = fuzzy_match(query, display)
+                                positions = list(hit[1]) if hit is not None else []
+                            except Exception as e:
+                                logger.debug("fuzzy highlight failed: %r", e, exc_info=True)
+                                positions = []
+                        self._store.append(
+                            [display, markup_highlight(display, positions), labels.get(display, display)]
+                        )
             except Exception as e:
                 logger.debug(f"fuzzy refilter failed: {e!r}")
             self._update_status(len(self._store), len(self._files), query)
@@ -413,13 +457,14 @@ class _FuzzyFinderManager:
             items.append((display, path))
         ordered = order_with_recent(items, self._recent)
         try:
+            if getattr(dialog, "_destroyed", False):
+                return
             if GLib is not None:
                 GLib.idle_add(dialog.set_files, ordered)
             else:
                 dialog.set_files(ordered)
         except Exception as e:
             logger.debug(f"fuzzy background update failed: {e!r}")
-
     # -- dialog --------------------------------------------------------
 
     def _show_finder(self) -> None:

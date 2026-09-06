@@ -7,6 +7,10 @@ import os
 
 logger = logging.getLogger(__name__)
 
+# Problems ListStore column indices: (severity, file, line1, message, path).
+# The path column is hidden (no TreeViewColumn) but used for jump-to.
+(PROB_SEV, PROB_FILE, PROB_LINE, PROB_MSG, PROB_PATH) = range(5)
+
 try:
     import gi
 
@@ -72,7 +76,7 @@ else:
             self.problem_store = Gtk.ListStore(str, str, int, str, str)
             self.problem_tree = Gtk.TreeView.new_with_model(self.problem_store)
             self.problem_tree.set_headers_visible(True)
-            for index, title in ((0, "Severity"), (1, "File"), (2, "Line"), (3, "Message")):
+            for index, title in ((PROB_SEV, "Severity"), (PROB_FILE, "File"), (PROB_LINE, "Line"), (PROB_MSG, "Message")):
                 col = Gtk.TreeViewColumn(title)
                 cell = Gtk.CellRendererText()
                 col.pack_start(cell, True)
@@ -93,7 +97,7 @@ else:
             try:
                 self.textview.scroll_to_mark(mark, 0.0, True, 0.0, 1.0)
             except Exception:
-                pass
+                logger.debug("OutputView scroll failed", exc_info=True)
 
         def append(self, text: str) -> None:
             GLib.idle_add(self._append, text)
@@ -125,6 +129,7 @@ else:
                 fpath = self.problem_store.get_value(tree_iter, PROB_PATH)
                 line1 = int(self.problem_store.get_value(tree_iter, PROB_LINE))
             except Exception:
+                logger.debug("problem activation failed", exc_info=True)
                 return
             if fpath and os.path.isfile(fpath):
                 self.emit("jump-to", fpath, max(0, line1 - 1), 0)

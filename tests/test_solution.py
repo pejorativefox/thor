@@ -126,10 +126,7 @@ def test_parse_csproj_test_detection():
         assert info.package_refs == ["xunit 2.9.0"]
 
 
-def _touch(path):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write("// x")
+from conftest import _touch  # shared helper (see tests/conftest.py)
 
 
 def _flatten(nodes):

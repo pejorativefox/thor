@@ -21,8 +21,7 @@ def _gui():
         if not ok:
             return None
         return Gtk
-    except Exception as e:
-        print(f"SKIP explorer gui tests (no display: {e})")
+    except Exception:
         return None
 
 

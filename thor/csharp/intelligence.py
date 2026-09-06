@@ -326,14 +326,27 @@ def parse_completion(
                 e = replace_range.get("end", {})
                 start = position_to_offset(text, int(s.get("line", 0)), int(s.get("character", 0)))
                 end = position_to_offset(text, int(e.get("line", 0)), int(e.get("character", 0)))
+                if not (insert_start <= offset <= insert_end and start <= offset <= end):
+                    logger.debug(
+                        "parse_completion: textEdit insert/replace ignores cursor "
+                        f"(offset={offset} insert={insert_start}-{insert_end} "
+                        f"replace={start}-{end}); word-range fallback")
+                    start, end = fallback_start, fallback_end
+                    insert_start, insert_end = fallback_start, fallback_end
             elif isinstance(single_range, dict):
                 s = single_range.get("start", {})
                 e = single_range.get("end", {})
                 start = position_to_offset(text, int(s.get("line", 0)), int(s.get("character", 0)))
                 end = position_to_offset(text, int(e.get("line", 0)), int(e.get("character", 0)))
+                if not (start <= offset <= end):
+                    logger.debug(
+                        "parse_completion: textEdit range ignores cursor "
+                        f"(offset={offset} range={start}-{end}); word-range fallback")
+                    start, end = fallback_start, fallback_end
                 insert_start, insert_end = start, end
         except (TypeError, ValueError):
-            pass
+            start, end = fallback_start, fallback_end
+            insert_start, insert_end = fallback_start, fallback_end
         try:
             kind = int(raw.get("kind", 0))
         except (TypeError, ValueError):

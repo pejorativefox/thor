@@ -43,23 +43,38 @@ def _glob_case(directory: str, *patterns: str) -> List[str]:
     """Glob for solution files, tolerating uppercase extensions (*.SLN)."""
     found: List[str] = []
     for pattern in patterns:
-        found.extend(glob.glob(os.path.join(directory, pattern)))
+        try:
+            found.extend(glob.glob(os.path.join(directory, pattern)))
+        except OSError as e:
+            logger.debug(f"_glob_case {directory}/{pattern} failed: {e!r}")
     return sorted(found)
 
 
 def find_solution(start_path: str) -> Optional[str]:
-    """Walk upward looking for *.sln then *.slnx. Returns absolute path or None."""
+    """Walk upward looking for *.sln then *.slnx. Returns absolute path or None.
+
+    Matching is case-insensitive (``*.sln`` and ``*.SLN`` both count). When
+    a directory holds several solutions the alphabetically-first ``*.sln``
+    wins (logged); a nearer ``*.slnx`` still beats a farther ``*.sln``
+    because the walk goes inside-out.
+    """
     directory = os.path.abspath(start_path)
     if os.path.isfile(directory):
         directory = os.path.dirname(directory)
     while True:
         solutions = _glob_case(directory, "*.sln", "*.SLN")
         if solutions:
-            logger.debug(f"find_solution: {solutions[0]}")
+            if len(solutions) > 1:
+                logger.debug(f"find_solution: {len(solutions)} .sln files, using {solutions[0]}")
+            else:
+                logger.debug(f"find_solution: {solutions[0]}")
             return solutions[0]
         slnx = _glob_case(directory, "*.slnx", "*.SLNX")
         if slnx:
-            logger.debug(f"find_solution: {slnx[0]}")
+            if len(slnx) > 1:
+                logger.debug(f"find_solution: {len(slnx)} .slnx files, using {slnx[0]}")
+            else:
+                logger.debug(f"find_solution: {slnx[0]}")
             return slnx[0]
         parent = os.path.dirname(directory)
         if parent == directory:
@@ -77,6 +92,11 @@ _PRUNE_DIRS = frozenset({
     "dosdevices", "drive_c",
 })
 
+#: Max walk depth for the glob fallback (see find_projects_fallback).
+#: One repo is shallow; deeper crawls wander into fixtures, SDK packs,
+#: and (via symlinks) /proc.
+FALLBACK_MAX_DEPTH = 4
+
 
 def is_home_root(path: str) -> bool:
     """True when path is the user's home dir (or above it)."""
@@ -84,17 +104,27 @@ def is_home_root(path: str) -> bool:
         real = os.path.realpath(os.path.abspath(path))
         home = os.path.realpath(os.path.expanduser("~"))
         return real == home or real == os.path.dirname(home) or real == "/"
-    except Exception:
+    except Exception as e:
+        logger.debug(f"is_home_root {path!r} failed: {e!r}")
         return False
 
 
 def find_projects_fallback(root_dir: str) -> List[str]:
-    """Glob fallback when `dotnet sln` is unavailable."""
+    """Glob fallback when `dotnet sln` is unavailable.
+
+    Walks at most ``FALLBACK_MAX_DEPTH`` levels deep: one repo is
+    shallow, and deeper crawls wander into fixtures, SDK packs, and
+    (via symlinks) /proc. Symlinked dirs are never descended into.
+    """
     if is_home_root(root_dir):
         logger.debug(f"find_projects_fallback: refusing to crawl {root_dir!r}")
         return []
     found = []
-    for dirpath, dirnames, filenames in os.walk(root_dir, followlinks=False):
+
+    def _on_error(err: OSError) -> None:
+        logger.debug(f"find_projects_fallback walk error: {err!r}")
+
+    for dirpath, dirnames, filenames in os.walk(root_dir, followlinks=False, onerror=_on_error):
         parts = dirpath.split(os.sep)
         if "obj" in parts or "bin" in parts:
             continue
@@ -106,11 +136,11 @@ def find_projects_fallback(root_dir: str) -> List[str]:
             and not os.path.islink(os.path.join(dirpath, d))
         ]
         for filename in filenames:
-            if filename.endswith(".csproj"):
+            if filename.lower().endswith(".csproj"):
                 found.append(os.path.join(dirpath, filename))
         # Don't descend too deep for the fallback; one repo = shallow.
         depth = os.path.relpath(dirpath, root_dir).count(os.sep)
-        if depth > 4:
+        if depth > FALLBACK_MAX_DEPTH:
             dirnames[:] = []
     return sorted(found)
 
@@ -153,20 +183,34 @@ def project_tree(root_dir: str, max_depth: int = 8) -> List[FileNode]:
                     nodes.append(FileNode(entry.name, entry.path, True, children))
             elif entry.name.endswith(".cs"):
                 nodes.append(FileNode(entry.name, entry.path, False, []))
-        except OSError:
+        except OSError as e:
+            logger.debug(f"project_tree entry failed: {e!r}")
             continue
     return nodes
+
+
+#: A project line from `dotnet sln list`: an optional console marker
+#: (dashes, '>', whitespace) followed by a relative or absolute path
+#: ending in .csproj (case-insensitive). Strict on purpose: header lines
+#: ("Project(s)", "----------", "2 Project(s)") must not leak through as
+#: projects, or the explorer shows phantom entries.
+_SLN_PROJECT_LINE_RE = re.compile(
+    r"^[\-\s>]*"
+    r"(?P<path>[A-Za-z0-9_][\w\- .\\/\\\\:()~]*?\.csproj)"
+    r"\s*$",
+    re.IGNORECASE,
+)
 
 
 def parse_sln_list_output(text: str, solution_dir: str) -> List[str]:
     """Parse `dotnet sln list` output into absolute .csproj paths."""
     projects: List[str] = []
     for line in text.splitlines():
-        line = line.strip()
-        if not line.lower().endswith(".csproj"):
+        match = _SLN_PROJECT_LINE_RE.match(line.strip())
+        if not match:
             continue
-        # Lines look like: "src/App/App.csproj" possibly with leading dashes/separators.
-        candidate = re.sub(r"^[\-\s>]+", "", line).strip()
+        # Windows-style separators from `dotnet sln` on any host.
+        candidate = match.group("path").replace("\\", os.sep).strip()
         abs_path = candidate if os.path.isabs(candidate) else os.path.join(solution_dir, candidate)
         projects.append(os.path.normpath(abs_path))
     return projects
@@ -205,6 +249,8 @@ def parse_csproj(path: str) -> ProjectInfo:
         logger.debug(f"parse_csproj {path}: {e}")
     except FileNotFoundError:
         logger.debug(f"parse_csproj missing: {path}")
+    except OSError as e:
+        logger.debug(f"parse_csproj unreadable {path}: {e!r}")
     return info
 
 
@@ -215,11 +261,18 @@ def load_solution(start_path: str, dotnet: str = "dotnet") -> SolutionModel:
     )
     projects: List[str] = []
     if sln:
-        result = dotnet_cli.run_sync([dotnet, "sln", sln, "list"])
-        if result.returncode == 0:
+        try:
+            result = dotnet_cli.run_sync([dotnet, "sln", sln, "list"])
+        except OSError as e:
+            # run_sync already maps spawn failures to 127/126, but never
+            # let discovery crash the refresh path on exotic hosts.
+            logger.debug(f"`dotnet sln list` spawn failed: {e!r}")
+            result = None
+        if result is not None and result.returncode == 0:
             projects = parse_sln_list_output(result.stdout, os.path.dirname(sln))
         else:
-            logger.debug(f"`dotnet sln list` failed ({result.returncode}), glob fallback")
+            code = result.returncode if result is not None else "spawn-error"
+            logger.debug(f"`dotnet sln list` failed ({code}), glob fallback")
     if not projects:
         projects = find_projects_fallback(root)
     if sln:
@@ -230,8 +283,8 @@ def load_solution(start_path: str, dotnet: str = "dotnet") -> SolutionModel:
         # dosdevices/z: -> /proc, where it aborts (exit 134).
         try:
             root = os.path.commonpath([os.path.dirname(p) for p in projects])
-        except ValueError:
-            pass
+        except ValueError as e:
+            logger.debug(f"load_solution commonpath failed: {e!r}")
     model = SolutionModel(path=sln, root_dir=root)
     for csproj in projects:
         if os.path.exists(csproj):

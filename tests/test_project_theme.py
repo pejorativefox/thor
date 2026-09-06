@@ -40,8 +40,7 @@ def _display():
         if not ok:
             return None
         return Gtk
-    except Exception as e:
-        print(f"SKIP browser recolor test (no display: {e})")
+    except Exception:
         return None
 
 
@@ -104,7 +103,7 @@ def test_rebuild_keeps_colors_when_status_unchanged():
 
     def git(*args):
         subprocess.run(["git", *args], cwd=tmp, check=True,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
 
     git("init")
     git("config", "user.email", "t@t.t")

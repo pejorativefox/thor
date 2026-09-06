@@ -8,6 +8,10 @@ VS Code / mousepad Ctrl+F behaviour (not whole-word like occurrences).
 from __future__ import annotations
 
 
+import re
+
+_MAX_HITS = 5000
+
 def find_all(
     text: str,
     query: str,
@@ -16,34 +20,36 @@ def find_all(
     """Return non-overlapping ``(start, end)`` hits of *query* in *text*.
 
     Empty query → ``[]``.
+
+    Case-insensitive matching uses :func:`re.finditer` with
+    ``re.IGNORECASE`` on the original text so offsets always refer to
+    *text*. ``str.lower()``/``casefold()`` can change string length
+    (e.g. ``İ`` → ``i̇``, ``ß`` → ``ss``), which skews offsets when the
+    search runs on the lowered copy.
     """
     if not query:
         return []
-    if not case_sensitive:
-        hay = text.lower()
-        needle = query.lower()
-    else:
-        hay = text
-        needle = query
-    hits: list[tuple[int, int]] = []
-    qlen = len(needle)
-    if qlen == 0:
-        return []
-    start = 0
-    # guard against infinite loop on empty needle (already returned) and
-    # ensure progress even if needle is empty string slicing edge
-    while True:
-        idx = hay.find(needle, start)
-        if idx < 0:
-            break
-        hits.append((idx, idx + qlen))
-        start = idx + qlen
-        # avoid infinite if qlen == 0 (defensive)
+    if case_sensitive:
+        hits: list[tuple[int, int]] = []
+        qlen = len(query)
         if qlen == 0:
-            start += 1
-            if start > len(hay):
+            return []
+        start = 0
+        while True:
+            idx = text.find(query, start)
+            if idx < 0:
                 break
-    return hits
+            hits.append((idx, idx + qlen))
+            start = idx + qlen
+            if len(hits) >= _MAX_HITS:
+                break
+        return hits
+    try:
+        pattern = re.compile(re.escape(query), re.IGNORECASE)
+    except re.error:
+        return []
+    hits = [(m.start(), m.end()) for m in pattern.finditer(text) if m.end() > m.start()]
+    return hits[:_MAX_HITS]
 
 
 def next_index(hits: list[tuple[int, int]], cursor_offset: int, wrap: bool = True) -> int | None:

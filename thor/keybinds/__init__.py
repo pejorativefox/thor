@@ -1,7 +1,19 @@
 # -*- coding: utf-8 -*-
 """Thor keybinds — tab cycling, line copy/cut/paste, preferences.
 
-Keybinds for Thor.
+Key ownership (return True ONLY when handled, else False so the next
+window ``key-press-event`` handler runs):
+
+- This module: Ctrl+PageUp/PageDown (tab cycle), Ctrl+C/X/V whole-line
+  hijack (only when the focused editable view has NO selection), Ctrl+,
+  (preferences).
+- panel_hider: Ctrl+B (two-way side/bottom toggle).
+- terminal: Ctrl+Shift+T (new tab), Ctrl+\\` (two-way focus/reveal),
+  Ctrl+Shift+W (close terminal tab — NOT window close; the window's own
+  close binding must use a different accelerator or check that the
+  terminal claimed the key first).
+- fuzzy: Ctrl+P.  find: Ctrl+F / F3.
+
 Headless-safe: pure helpers importable without a display.
 """
 
@@ -152,11 +164,24 @@ def _active_editor_view(window):
 def _handle_clipboard_key(lowered, view) -> bool:
     """Handle Ctrl+C/X/V line copy/cut/paste when no selection. Pure helper.
 
-    `lowered` is lowercased keyname; `view` is the focused editor view.
+    Strict gate: only when ``view`` is focused AND editable AND the buffer
+    has NO selection. Any selection, non-editable view, or inline (non
+    ``\\n``-terminated) clipboard content falls through (False) so stock
+    GTK bindings run. Returns True only when this handler acted.
     """
     try:
+        try:
+            if not view.is_focus() or not view.get_editable():
+                return False
+        except Exception as e:
+            logger.debug("clipboard focus/edit check failed: %r", e, exc_info=True)
+            return False
         buffer = view.get_buffer()
-        if buffer.get_has_selection() or not view.get_editable():
+        try:
+            if buffer.get_has_selection():
+                return False
+        except Exception as e:
+            logger.debug("clipboard selection check failed: %r", e, exc_info=True)
             return False
         if lowered in ("c", "x"):
             insert = buffer.get_insert()
@@ -177,13 +202,13 @@ def _handle_clipboard_key(lowered, view) -> bool:
             finally:
                 try:
                     buffer.end_user_action()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("clipboard end action failed: %r", e, exc_info=True)
             try:
                 target = min(line, buffer.get_line_count() - 1)
                 buffer.place_cursor(buffer.get_iter_at_line(target))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("clipboard cursor restore failed: %r", e, exc_info=True)
             return True
         if lowered == "v":
             text = _get_clipboard_text()
@@ -197,8 +222,8 @@ def _handle_clipboard_key(lowered, view) -> bool:
             finally:
                 try:
                     buffer.end_user_action()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("clipboard end action failed: %r", e, exc_info=True)
             return True
         return False
     except Exception as e:
@@ -272,9 +297,20 @@ def handle_global_key(*args, **kwargs) -> bool:
     if "alt" in kwargs:
         alt = kwargs["alt"]
 
+    # Owned Ctrl-only keys below. Everything else — notably Ctrl+B
+    # (panel_hider), Ctrl+` (terminal), Ctrl+Shift+W (terminal close, not
+    # window close), Ctrl+P/F — must fall through (False) so the owning
+    # handler runs. Returning True here would swallow those keys.
     if not (ctrl and not shift and not alt):
         return False
     lowered = (keyname or "").lower()
+    # Explicitly decline keys owned by sibling handlers, even though the
+    # generic guard above already rejects most (shifted) variants. This
+    # documents the Ctrl+Shift+W vs window-close conflict: this module
+    # never claims W; the terminal's close-tab handler runs first and the
+    # window must only close when it declines.
+    if lowered in ("b", "p", "f", "g", "w", "grave", "quoteleft", "asciigrave", "`"):
+        return False
     if lowered in ("page_up", "kp_page_up"):
         logger.debug("key: Ctrl+PageUp previous-tab")
         # window may be None in legacy/no-window tests; _step_tab handles None gracefully via try
@@ -284,8 +320,8 @@ def handle_global_key(*args, **kwargs) -> bool:
             # still report handled even without window (like original single-tab test)
             try:
                 _step_tab(window, -1)  # type: ignore[arg-type]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("tab step failed: %r", e, exc_info=True)
         return True
     if lowered in ("page_down", "kp_page_down"):
         logger.debug("key: Ctrl+PageDown next-tab")
@@ -294,8 +330,8 @@ def handle_global_key(*args, **kwargs) -> bool:
         else:
             try:
                 _step_tab(window, +1)  # type: ignore[arg-type]
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("tab step failed: %r", e, exc_info=True)
         return True
     if lowered in ("c", "x", "v"):
         # needs a view; without window we must try _active_editor_view if window exists

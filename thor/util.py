@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import logging
 
+logger = logging.getLogger(__name__)
 def tab_state_name(state) -> str:
     """Normalized TabState name for a raw ``get_state()`` value.
 
@@ -18,16 +20,17 @@ def tab_state_name(state) -> str:
         if isinstance(name, str) and name:
             return name
     except Exception:
-        pass
+        logger.debug("tab_state_name: value_name failed", exc_info=True)
     try:
         nick = getattr(state, "value_nick", None)
         if isinstance(nick, str) and nick:
             return nick
     except Exception:
-        pass
+        logger.debug("tab_state_name: value_nick failed", exc_info=True)
     try:
         num = int(state)  # type: ignore[arg-type]
     except Exception:
+        logger.debug("tab_state_name: int() failed", exc_info=True)
         num = None
     if num == 0:
         return "THOR_TAB_STATE_NORMAL"
@@ -36,8 +39,8 @@ def tab_state_name(state) -> str:
     try:
         return str(state)
     except Exception:
+        logger.debug("tab_state_name: str() failed", exc_info=True)
         return ""
-
 
 def is_save_completed(previous, current) -> bool:
     """True on a SAVING -> NORMAL tab-state transition (save done)."""
@@ -45,29 +48,40 @@ def is_save_completed(previous, current) -> bool:
         prev = tab_state_name(previous).upper()
         cur = tab_state_name(current).upper()
     except Exception:
+        logger.debug("is_save_completed: normalize failed", exc_info=True)
         return False
     return "SAVING" in prev and "ERROR" not in prev and cur.endswith("NORMAL")
 
-
 def doc_path(doc) -> str | None:
-    """Best-effort file path for a document, or None for untitled/remote."""
+    """Best-effort file path (or URI for remote) for a document, else None."""
     try:
         location = doc.get_location()
     except Exception:
+        logger.debug("doc_path: get_location failed", exc_info=True)
         location = None
     if location is None:
         try:
             location = doc.get_file().get_location()
         except Exception:
+            logger.debug("doc_path: get_file location failed", exc_info=True)
             location = None
     if location is None:
         return None
     try:
-        if not location.has_uri_scheme("file"):
-            return None
-        return location.get_path()
+        path = location.get_path()
     except Exception:
-        return None
+        logger.debug("doc_path: get_path failed", exc_info=True)
+        path = None
+    if path:
+        return path
+    try:
+        uri = location.get_uri()
+    except Exception:
+        logger.debug("doc_path: get_uri failed", exc_info=True)
+        uri = None
+    if uri:
+        return uri
+    return None
 
 
 __all__ = ["tab_state_name", "is_save_completed", "doc_path"]

@@ -26,8 +26,7 @@ def _gui():
         if not ok:
             return None
         return Gtk, Gdk
-    except Exception as e:
-        print(f"SKIP popup tests (no display: {e})")
+    except Exception:
         return None
 
 

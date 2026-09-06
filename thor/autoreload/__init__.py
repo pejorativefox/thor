@@ -27,24 +27,30 @@ try:
     gi.require_version("Gtk", "3.0")
     try:
         gi.require_version("GtkSource", "4")
-    except Exception:
+    except Exception as e:
+        logger.debug("GtkSource 4 unavailable: %r", e, exc_info=True)
         try:
             gi.require_version("GtkSource", "3.0")
-        except Exception:
-            pass
+        except Exception as e2:
+            logger.debug("GtkSource 3 unavailable: %r", e2, exc_info=True)
     from gi.repository import Gio, GLib  # type: ignore
 
     try:
         from gi.repository import GtkSource  # type: ignore
-    except Exception:
+    except Exception as e:
+        logger.debug("GtkSource import failed: %r", e, exc_info=True)
         GtkSource = None  # type: ignore[assignment]
-except Exception:
+except Exception as e:
+    logger.debug("GTK unavailable, autoreload headless: %r", e, exc_info=True)
     Gio = None  # type: ignore[assignment]
     GLib = None  # type: ignore[assignment]
     GtkSource = None  # type: ignore[assignment]
 
 
+#: Tab state meaning "file changed on disk since load". Numeric because the
+#: host tab-state enum is not importable headless; tests pin value 13.
 _EXTERNALLY_MODIFIED_STATE = 13
+EXTERNALLY_MODIFIED_STATE = _EXTERNALLY_MODIFIED_STATE
 
 
 def doc_location(doc):
@@ -125,11 +131,18 @@ def buffer_bytes(doc) -> bytes | None:
 def read_file_bytes(path: str, cap: int = _COMPARE_CAP_BYTES) -> bytes | None:
     """Raw file bytes up to cap, or None when missing/unreadable/too big."""
     try:
-        if os.path.getsize(path) > cap:
-            return None
+        size = os.path.getsize(path)
+    except Exception as e:
+        logger.debug("stat failed for %s: %r", path, e, exc_info=True)
+        return None
+    if size > cap:
+        logger.debug("skip compare for %s: %d bytes > %d cap", path, size, cap)
+        return None
+    try:
         with open(path, "rb") as f:
             return f.read()
-    except Exception:
+    except Exception as e:
+        logger.debug("read failed for %s: %r", path, e, exc_info=True)
         return None
 
 
@@ -145,10 +158,18 @@ def file_differs(doc, path: str) -> bool | None:
     short of the on-disk bytes.
     """
     try:
-        if os.path.getsize(path) > _COMPARE_CAP_BYTES:
-            return True
-    except Exception:
+        size = os.path.getsize(path)
+    except Exception as e:
+        logger.debug("stat failed for %s: %r", path, e, exc_info=True)
         return None
+    if size > _COMPARE_CAP_BYTES:
+        # Keep the reload (a clean large buffer should still pick up an
+        # external change) but say so instead of silently forcing True.
+        logger.debug(
+            "large file %s (%d bytes > %d cap): treating as differs without compare",
+            path, size, _COMPARE_CAP_BYTES,
+        )
+        return True
     data = read_file_bytes(path)
     if data is None:
         return None
@@ -188,8 +209,6 @@ class AutoReloadManager:
         self._loading: set = set()
         self._attach(window)
 
-    # -- window signals -------------------------------------------------
-
     def _attach(self, window) -> None:
         for signal, handler in (
             ("tab-added", self._on_tab_added),
@@ -206,8 +225,8 @@ class AutoReloadManager:
         for obj, handler_id in self._signal_ids:
             try:
                 obj.disconnect(handler_id)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("autoreload disconnect failed: %r", e, exc_info=True)
         self._signal_ids = []
 
     def _on_tab_added(self, window, _tab) -> None:
@@ -285,6 +304,16 @@ class AutoReloadManager:
             holder.pop("loader", None)
             if path is not None:
                 self._loading.discard(path)
+            # TOCTOU re-check: the user may have typed while the async load
+            # was in flight. Confirm the buffer is still clean before
+            # finalising the load, otherwise keep the user's fresh edits.
+            try:
+                if not should_reload(doc):
+                    logger.debug("reload done: buffer dirty now, keeping user edits")
+                    return
+            except Exception as e:
+                logger.debug("reload done: should_reload re-check failed: %r", e, exc_info=True)
+                return
             try:
                 ok = loader.load_finish(result)
             except Exception as e:
@@ -295,11 +324,10 @@ class AutoReloadManager:
             try:
                 last = max(0, int(doc.get_line_count()) - 1)
                 doc.place_cursor(doc.get_iter_at_line(min(max(0, line), last)))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("reload cursor restore failed: %r", e, exc_info=True)
             self._clear_modified_state(window, doc)
             logger.debug(f"reloaded {path if path is not None else location} (clean, {reason})")
-
         try:
             loader.load_async(GLib.PRIORITY_DEFAULT, None, None, None, _done, None)
         except Exception as e:

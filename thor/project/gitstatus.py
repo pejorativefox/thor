@@ -12,8 +12,11 @@ Colors are VS Code's default dark `gitDecoration.*ResourceForeground` values
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
+
+logger = logging.getLogger(__name__)
 
 GIT_TIMEOUT_S = 10
 
@@ -37,6 +40,7 @@ def find_git_root(folder: str, timeout: int = 5) -> str | None:
         if not folder or not os.path.isdir(folder):
             return None
     except Exception:
+        logger.debug(f"find_git_root guard failed for {folder!r}", exc_info=True)
         return None
     try:
         proc = subprocess.run(
@@ -48,11 +52,13 @@ def find_git_root(folder: str, timeout: int = 5) -> str | None:
             check=False,
         )
     except Exception:
+        logger.debug(f"find_git_root git failed for {folder}", exc_info=True)
         proc = None
     if proc is not None and proc.returncode == 0:
         try:
             top = proc.stdout.decode("utf-8", "surrogateescape").strip()
         except Exception:
+            logger.debug("find_git_root decode failed", exc_info=True)
             top = ""
         if top and os.path.isdir(top):
             return os.path.abspath(top)
@@ -69,6 +75,7 @@ def find_git_root(folder: str, timeout: int = 5) -> str | None:
                 return None
             current = parent
     except Exception:
+        logger.debug(f"find_git_root walk failed for {folder}", exc_info=True)
         return None
 
 
@@ -82,9 +89,12 @@ def _decode_repo_path(raw: bytes) -> str:
     try:
         text = raw.decode("utf-8", "surrogateescape")
     except Exception:
+        logger.debug("repo path decode failed", exc_info=True)
         return ""
     if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
         body = text[1:-1]
+        if "\\" not in body:
+            return body
         try:
             return (
                 body.encode("utf-8", "surrogateescape")
@@ -93,6 +103,7 @@ def _decode_repo_path(raw: bytes) -> str:
                 .decode("utf-8", "surrogateescape")
             )
         except Exception:
+            logger.debug("repo path unescape failed", exc_info=True)
             return body
     return text
 
@@ -109,6 +120,7 @@ def parse_porcelain_z(raw: bytes, root: str) -> dict[str, tuple[str, str]]:
     try:
         fields = raw.split(b"\x00")
     except Exception:
+        logger.debug("porcelain split failed", exc_info=True)
         return statuses
     i = 0
     while i < len(fields):
@@ -122,6 +134,7 @@ def parse_porcelain_z(raw: bytes, root: str) -> dict[str, tuple[str, str]]:
             x = chr(field[0])
             y = chr(field[1])
         except Exception:
+            logger.debug("porcelain XY decode failed", exc_info=True)
             continue
         rel = _decode_repo_path(field[3:])
         if not rel:
@@ -139,6 +152,7 @@ def get_git_statuses(root_dir: str, timeout: int = GIT_TIMEOUT_S) -> dict[str, t
         if not root_dir or not os.path.isdir(root_dir):
             return {}
     except Exception:
+        logger.debug(f"git status guard failed for {root_dir!r}", exc_info=True)
         return {}
     try:
         proc = subprocess.run(
@@ -158,12 +172,15 @@ def get_git_statuses(root_dir: str, timeout: int = GIT_TIMEOUT_S) -> dict[str, t
             check=False,
         )
     except Exception:
+        logger.debug(f"git status failed for {root_dir}", exc_info=True)
         return {}
     if proc.returncode != 0:
+        logger.debug(f"git status rc={proc.returncode} for {root_dir}")
         return {}
     try:
         return parse_porcelain_z(proc.stdout or b"", os.path.abspath(root_dir))
     except Exception:
+        logger.debug(f"git status parse failed for {root_dir}", exc_info=True)
         return {}
 
 
@@ -172,6 +189,7 @@ def status_to_color(x: str, y: str) -> str | None:
     try:
         code = f"{x}{y}"
     except Exception:
+        logger.debug("status_to_color format failed", exc_info=True)
         return None
     if code in _UNMERGED or (x == "U" or y == "U"):
         return COLOR_CONFLICTING
@@ -199,6 +217,7 @@ def color_for_path(
     try:
         code = statuses.get(os.path.abspath(path))
     except Exception:
+        logger.debug(f"color_for_path lookup failed for {path!r}", exc_info=True)
         return None
     if not code:
         return None
@@ -226,6 +245,7 @@ def aggregate_dir_color(colors) -> str | None:
     try:
         items = list(colors)
     except Exception:
+        logger.debug("aggregate_dir_color iter failed", exc_info=True)
         return None
     for color in items:
         if not color:
