@@ -25,13 +25,17 @@ DEFAULTS = {
 
 
 def _config_dir() -> str:
-    if GLib is not None:
-        try:
-            base = GLib.get_user_config_dir()
-        except Exception:
+    try:
+        from thor import xdg
+        base = xdg.config_home()
+    except Exception:
+        if GLib is not None:
+            try:
+                base = GLib.get_user_config_dir()
+            except Exception:
+                base = os.path.expanduser("~/.config")
+        else:
             base = os.path.expanduser("~/.config")
-    else:
-        base = os.path.expanduser("~/.config")
     return os.path.join(base, "thor", "plugins", "thor-csharp")
 
 

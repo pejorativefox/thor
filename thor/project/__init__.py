@@ -97,12 +97,16 @@ _PROJECT_MARKER_NAMES = frozenset(
 _PROJECT_MARKER_SUFFIXES = (".sln", ".slnx", ".csproj")
 
 def _cache_dir() -> str:
-    if GLib is not None:
-        try:
-            return os.path.join(GLib.get_user_cache_dir(), "thor", "project-mode")
-        except Exception:
-            logger.debug("user cache dir lookup failed", exc_info=True)
-    return os.path.join(os.path.expanduser("~/.cache"), "thor", "project-mode")
+    try:
+        from thor import xdg
+        return os.path.join(xdg.cache_home(), "thor", "project-mode")
+    except Exception:
+        if GLib is not None:
+            try:
+                return os.path.join(GLib.get_user_cache_dir(), "thor", "project-mode")
+            except Exception:
+                logger.debug("user cache dir lookup failed", exc_info=True)
+        return os.path.join(os.path.expanduser("~/.cache"), "thor", "project-mode")
 
 def pending_root_path(base: str | None = None) -> str:
     """Path of the one-shot `thor-code` handoff file."""

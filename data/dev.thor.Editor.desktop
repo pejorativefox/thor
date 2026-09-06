@@ -1,0 +1,18 @@
+[Desktop Entry]
+Type=Application
+Name=Thor
+GenericName=Text Editor
+Comment=Lightweight GtkSourceView editor with baked-in plugins
+Exec=thor %F
+Terminal=false
+Icon=dev.thor.Editor
+Categories=GNOME;GTK;Utility;TextEditor;Development;IDE;
+MimeType=text/plain;text/x-csharp;text/x-python;text/x-markdown;text/x-c;text/x-c++;text/x-csrc;text/x-chdr;
+Keywords=editor;text;code;csharp;development;gtk;ide;
+StartupNotify=true
+StartupWMClass=dev.thor.Editor
+Actions=NewWindow;
+
+[Desktop Action NewWindow]
+Name=New Window
+Exec=thor --new-window

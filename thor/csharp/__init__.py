@@ -688,9 +688,13 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
                 self.output.append("Install: dotnet tool install --global roslyn-language-server\n")
             return
         try:
-            log_dir = os.path.join(GLib.get_user_cache_dir(), "thor", "thor-csharp", "roslyn-logs")
+            from thor import xdg
+            log_dir = xdg.roslyn_log_dir()
         except Exception:
-            log_dir = ""
+            try:
+                log_dir = os.path.join(GLib.get_user_cache_dir(), "thor", "thor-csharp", "roslyn-logs")
+            except Exception:
+                log_dir = ""
         try:
             if log_dir:
                 os.makedirs(log_dir, exist_ok=True)

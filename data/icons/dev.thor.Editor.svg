@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#282C34"/>
+      <stop offset="100%" stop-color="#1E2227"/>
+    </linearGradient>
+    <linearGradient id="lightningGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#61AFEF"/>
+      <stop offset="50%" stop-color="#98C379"/>
+      <stop offset="100%" stop-color="#E5C07B"/>
+    </linearGradient>
+    <linearGradient id="glowGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#E5C07B" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#E06C75" stop-opacity="0.4"/>
+    </linearGradient>
+    <filter id="dropShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <!-- Background tile with drop shadow -->
+  <rect x="16" y="16" width="224" height="224" rx="48" fill="url(#bgGrad)" stroke="#3E4451" stroke-width="4" filter="url(#dropShadow)"/>
+
+  <!-- Code brackets stylized -->
+  <path d="M 72 84 L 44 128 L 72 172" fill="none" stroke="#5C6370" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M 184 84 L 212 128 L 184 172" fill="none" stroke="#5C6370" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Thor Lightning Bolt / Hammer Glyph -->
+  <polygon points="144,40 88,136 128,136 112,216 184,116 140,116" fill="url(#lightningGrad)" stroke="#D19A66" stroke-width="3" stroke-linejoin="round"/>
+</svg>

@@ -15,8 +15,15 @@ USAGE = "usage: thor-code [folder]"
 VERSION = "0.1.0"
 
 def _pending_path() -> str:
-    # Mirror thor.project._cache_dir() — GLib.get_user_cache_dir() respects
-    # XDG_CACHE_HOME and is the canonical source; fallback to env/file.
+    try:
+        from thor import xdg
+        return xdg.pending_root_path()
+    except Exception:
+        pass
+    # Fallback if thor package is not in python path
+    env = os.environ.get("XDG_CACHE_HOME", "").strip()
+    if env:
+        return os.path.join(os.path.abspath(env), "thor", "project-mode", "pending-root")
     try:
         import gi  # type: ignore
 
@@ -32,7 +39,7 @@ def _pending_path() -> str:
                 pass
     except Exception:
         pass
-    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
+    base = os.path.join(os.path.expanduser("~"), ".cache")
     return os.path.join(base, "thor", "project-mode", "pending-root")
 
 def resolve_target(argv: list[str]) -> str | None:

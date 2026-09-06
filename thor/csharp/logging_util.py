@@ -27,11 +27,11 @@ try:
 except Exception:  # headless / import cycle
     _setup_thor_logging = None  # type: ignore
 
-    def _is_debug_env() -> bool:  # type: ignore[no-redef]
-        return os.environ.get("THOR_DEBUG", "").strip().lower() not in ("", "0", "false", "no", "off")
-
-
-MARKER_PATH = f"/tmp/thor-csharp-{os.getuid()}.log"
+try:
+    from thor.xdg import marker_log_path as _get_marker_path
+    MARKER_PATH = _get_marker_path()
+except Exception:
+    MARKER_PATH = f"/tmp/thor-csharp-{os.getuid()}.log"
 MARKER_MAX_BYTES = 1 << 20  # 1 MiB cap for the debug marker file.
 
 
@@ -93,6 +93,7 @@ def _rotate_marker_if_large() -> None:
 def _append_marker(event: str) -> None:
     try:
         _rotate_marker_if_large()
+        os.makedirs(os.path.dirname(MARKER_PATH), exist_ok=True)
         stamp = datetime.datetime.now().isoformat(timespec="seconds")
         with open(MARKER_PATH, "a", encoding="utf-8") as f:
             f.write(f"{stamp} pid={os.getpid()} {event}\n")

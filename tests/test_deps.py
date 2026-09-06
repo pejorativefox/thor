@@ -30,7 +30,7 @@ def test_toolchain_all_missing():
 
 def test_error_logs_without_debug_env():
     logging_util.error("startup check test message")
-    marker = f"/tmp/thor-csharp-{os.getuid()}.log"
+    marker = logging_util.MARKER_PATH
     assert os.path.isfile(marker)
     with open(marker, encoding="utf-8") as f:
         assert "startup check test message" in f.read()

@@ -37,6 +37,10 @@ if Gtk is not None and GObject is not None:
         def __init__(self, app: Gtk.Application, initial_folder: str | None = None) -> None:  # type: ignore[name-defined]
             super().__init__(application=app, title="Thor")
             self.set_default_size(1280, 800)
+            try:
+                self.set_icon_name("dev.thor.Editor")
+            except Exception:
+                pass
             # XFCE: SSD via xfwm4 — no HeaderBar, follow mousepad/gedit.
             self._app = app
             self._initial_folder = initial_folder
@@ -660,10 +664,16 @@ if Gtk is not None and GObject is not None:
             # Still respects THOR_DARK=0 to force classic if user wants.
             try:
                 mgr = GtkSource.StyleSchemeManager.get_default()
-                here = pathlib.Path(__file__).resolve().parents[1]
-                style_dir = here / "styles"
-                if style_dir.is_dir():
-                    mgr.append_search_path(str(style_dir))
+                try:
+                    from . import xdg
+                    for s_dir in xdg.styles_dirs():
+                        if os.path.isdir(s_dir):
+                            mgr.append_search_path(s_dir)
+                except Exception:
+                    here = pathlib.Path(__file__).resolve().parents[1]
+                    style_dir = here / "styles"
+                    if style_dir.is_dir():
+                        mgr.append_search_path(str(style_dir))
                 force_classic = os.environ.get("THOR_DARK", "").strip().lower() in ("0", "false", "no", "off")
                 if force_classic:
                     return

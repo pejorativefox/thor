@@ -11,8 +11,15 @@ import sys
 import time
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
-THOR_CACHE_DIR = os.path.expanduser("~/.cache/thor/project-mode")
-THOR_MARKER = f"/tmp/thor-csharp-{os.getuid()}.log"
+try:
+    from thor import xdg
+    THOR_CACHE_DIR = os.path.dirname(xdg.pending_root_path())
+    THOR_MARKER = xdg.marker_log_path()
+    ROSLYN_LOG_DIR = xdg.roslyn_log_dir()
+except Exception:
+    THOR_CACHE_DIR = os.path.expanduser("~/.cache/thor/project-mode")
+    THOR_MARKER = f"/tmp/thor-csharp-{os.getuid()}.log"
+    ROSLYN_LOG_DIR = os.path.expanduser("~/.local/state/thor/logs")
 
 failures: list[str] = []
 warnings: list[str] = []
@@ -27,35 +34,55 @@ def check(label: str, ok: bool, hint: str = "", warn_only: bool = False) -> None
 
 
 def main() -> int:
-    print("== Thor doctor ==\n-- files --")
+    print("== Thor doctor ==\n-- files & assets --")
     check(
         "thor package importable",
         os.path.isdir(os.path.join(REPO_DIR, "thor")),
         "thor/ directory missing",
     )
     check(
-        "styles installed",
-        os.path.isfile(os.path.join(REPO_DIR, "styles", "atom-one-dark.xml")),
+        "styles available",
+        os.path.isfile(os.path.join(REPO_DIR, "styles", "atom-one-dark.xml"))
+        or any(os.path.isfile(os.path.join(d, "atom-one-dark.xml")) for d in (xdg.styles_dirs() if "xdg" in globals() else [])),
         "styles/atom-one-dark.xml missing",
     )
     check(
-        "csharp.lang installed",
-        os.path.isfile(os.path.join(REPO_DIR, "lang", "csharp.lang")),
+        "csharp.lang available",
+        os.path.isfile(os.path.join(REPO_DIR, "lang", "csharp.lang"))
+        or any(os.path.isfile(os.path.join(d, "csharp.lang")) for d in (xdg.lang_dirs() if "xdg" in globals() else [])),
         "lang/csharp.lang missing",
     )
     check(
+        "desktop entry",
+        os.path.isfile(os.path.join(REPO_DIR, "data", "dev.thor.Editor.desktop"))
+        or os.path.isfile(os.path.expanduser("~/.local/share/applications/dev.thor.Editor.desktop")),
+        "data/dev.thor.Editor.desktop missing",
+    )
+    check(
+        "scalable icon (svg)",
+        os.path.isfile(os.path.join(REPO_DIR, "data", "icons", "dev.thor.Editor.svg"))
+        or os.path.isfile(os.path.expanduser("~/.local/share/icons/hicolor/scalable/apps/dev.thor.Editor.svg")),
+        "data/icons/dev.thor.Editor.svg missing",
+    )
+    check(
+        "raster icon (png)",
+        os.path.isfile(os.path.join(REPO_DIR, "data", "icons", "dev.thor.Editor.png"))
+        or os.path.isfile(os.path.expanduser("~/.local/share/icons/hicolor/256x256/apps/dev.thor.Editor.png")),
+        "data/icons/dev.thor.Editor.png missing",
+    )
+    check(
         "thor-cli launcher",
-        os.path.isfile(os.path.join(REPO_DIR, "thor-cli")),
+        os.path.isfile(os.path.join(REPO_DIR, "thor-cli")) or shutil.which("thor-cli") is not None,
         "thor-cli missing",
     )
     check(
         "thor-code launcher",
-        os.path.isfile(os.path.join(REPO_DIR, "thor-code")),
+        os.path.isfile(os.path.join(REPO_DIR, "thor-code")) or shutil.which("thor-code") is not None,
         "thor-code missing",
     )
     check(
         "thor-open launcher",
-        os.path.isfile(os.path.join(REPO_DIR, "thor-open")),
+        os.path.isfile(os.path.join(REPO_DIR, "thor-open")) or shutil.which("thor-open") is not None,
         "thor-open missing",
     )
 
@@ -96,7 +123,7 @@ def main() -> int:
         pass
     check("roslyn-language-server", roslyn_ok, roslyn_hint, warn_only=True)
 
-    print("\n-- Thor state --")
+    print("\n-- Thor state & cache --")
     # pending-root handoff
     pending = os.path.join(THOR_CACHE_DIR, "pending-root")
     try:
@@ -119,20 +146,26 @@ def main() -> int:
         print(f"[info] Thor running: {', '.join(tprocs[:3])}")
         print("       -> quit all Thor windows first to reload (single-instance Gtk.Application)")
 
-    roslyn_log = os.path.expanduser("~/.cache/thor/thor-csharp/roslyn-logs/roslyn-stderr.log")
+    roslyn_log = os.path.join(ROSLYN_LOG_DIR, "roslyn-stderr.log")
+    legacy_roslyn_log = os.path.expanduser("~/.cache/thor/thor-csharp/roslyn-logs/roslyn-stderr.log")
     if os.path.isfile(roslyn_log):
         print(f"[info] Thor roslyn stderr log exists: {roslyn_log}")
+    elif os.path.isfile(legacy_roslyn_log):
+        print(f"[info] Thor legacy roslyn stderr log exists: {legacy_roslyn_log}")
 
     print("\n-- marker logs --")
-    if os.path.isfile(THOR_MARKER):
-        with open(THOR_MARKER, encoding="utf-8") as f:
+    legacy_marker = f"/tmp/thor-csharp-{os.getuid()}.log"
+    marker_to_read = THOR_MARKER if os.path.isfile(THOR_MARKER) else (legacy_marker if os.path.isfile(legacy_marker) else None)
+    if marker_to_read:
+        with open(marker_to_read, encoding="utf-8") as f:
             tlines = f.read().strip().splitlines()
-        print(f"thor marker log exists ({len(tlines)} lines), tail:")
+        print(f"thor marker log exists ({marker_to_read}, {len(tlines)} lines), tail:")
         for line in tlines[-5:]:
             print(f"  {line}")
     else:
         print("no thor marker log yet; run with THOR_DEBUG=1 to create it:")
         print(f"  THOR_DEBUG=1 thor   (or THOR_DEBUG=1 python -m thor)")
+        print(f"  Target location: {THOR_MARKER}")
     print()
     if failures:
         print(f"{len(failures)} hard failure(s). Fix the FAIL items above.")

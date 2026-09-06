@@ -78,13 +78,23 @@ thor-open 'file.cs:line:col'     # open at location
 THOR_DEBUG=1 thor                # verbose [thor:*] traces + marker log
 ```
 
-Styles and `csharp.lang` still go through `./install.sh` to XDG dirs, but
-Thor also reads `styles/` directly from the repo (no enable step — plugins
-baked in via `thor/host.py`).
+Styles, `csharp.lang`, icons, desktop entry, and launchers are installed
+via `./install.sh` to standard XDG directories:
 
 ```bash
-./install.sh  # installs styles/lang to ~/.local/share and launchers to ~/.local/bin
+./install.sh  # installs assets to ~/.local/share, logs to ~/.local/state, and launchers to ~/.local/bin
 ```
+
+### XDG Directory Layout
+
+- **Desktop Entry**: `~/.local/share/applications/dev.thor.Editor.desktop` (`$XDG_DATA_HOME/applications/`)
+- **Icons**: `~/.local/share/icons/hicolor/{scalable,256x256}/apps/dev.thor.Editor.{svg,png}`
+- **Styles**: `~/.local/share/gtksourceview-4/styles/` and `~/.local/share/thor/styles/`
+- **Language Specs**: `~/.local/share/gtksourceview-4/language-specs/`
+- **Configuration**: `~/.config/thor/` (`$XDG_CONFIG_HOME/thor/`)
+- **Cache**: `~/.cache/thor/project-mode/` (`$XDG_CACHE_HOME/thor/`)
+- **Logs & State**: `~/.local/state/thor/logs/` (`$XDG_STATE_HOME/thor/logs/`)
+- **Launchers**: `~/.local/bin/` (`$XDG_BIN_HOME`)
 
 ## Everyday shortcuts
 
@@ -125,8 +135,8 @@ The usual culprits:
    panel at the bottom shows what the language server is doing.
 
 If you report a problem, run with debug and include traces:
-`THOR_DEBUG=1 thor` (`[thor:*]`). Marker log: `/tmp/thor-csharp-$(id -u).log`,
-server stderr: `~/.cache/thor/.../roslyn-logs/roslyn-stderr.log`.
+`THOR_DEBUG=1 thor` (`[thor:*]`). Marker log: `~/.local/state/thor/logs/thor-csharp.log`,
+server stderr: `~/.local/state/thor/logs/roslyn-stderr.log`.
 
 ## For developers
 

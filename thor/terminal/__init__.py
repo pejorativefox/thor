@@ -267,14 +267,20 @@ def extract_scheme_colors(scheme_id: str):
         return None
     # ensure thor styles dir is visible
     try:
-        seen = list(manager.get_search_path() or [])
-        styledir = os.environ.get("THOR_STYLE_DIR") or os.path.expanduser(
-            "~/.local/share/thor/styles")
-        if styledir and styledir not in seen and os.path.isdir(styledir):
-            try:
-                manager.append_search_path(styledir)
-            except Exception:
-                pass
+        seen = set(manager.get_search_path() or [])
+        try:
+            from thor import xdg
+            s_dirs = xdg.styles_dirs()
+        except Exception:
+            styledir = os.environ.get("THOR_STYLE_DIR") or os.path.expanduser("~/.local/share/thor/styles")
+            s_dirs = [styledir]
+        for s_dir in s_dirs:
+            if s_dir and s_dir not in seen and os.path.isdir(s_dir):
+                try:
+                    manager.append_search_path(s_dir)
+                    seen.add(s_dir)
+                except Exception:
+                    pass
     except Exception:
         pass
     try:
