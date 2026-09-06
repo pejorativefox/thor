@@ -34,7 +34,11 @@ try:
         except Exception as e2:
             logger.debug("GtkSource 3 unavailable: %r", e2, exc_info=True)
     from gi.repository import Gio, GLib  # type: ignore
-
+    try:
+        from gi.repository import Gtk  # type: ignore
+    except Exception as e:
+        logger.debug("Gtk import failed: %r", e, exc_info=True)
+        Gtk = None  # type: ignore[assignment]
     try:
         from gi.repository import GtkSource  # type: ignore
     except Exception as e:
@@ -44,6 +48,7 @@ except Exception as e:
     logger.debug("GTK unavailable, autoreload headless: %r", e, exc_info=True)
     Gio = None  # type: ignore[assignment]
     GLib = None  # type: ignore[assignment]
+    Gtk = None  # type: ignore[assignment]
     GtkSource = None  # type: ignore[assignment]
 
 
@@ -85,6 +90,306 @@ def cursor_line(doc) -> int:
         return int(doc.get_iter_at_mark(doc.get_insert()).get_line())
     except Exception:
         return 0
+
+
+def cursor_offset(doc) -> int:
+    """0-based offset within the cursor line, best effort."""
+    try:
+        return int(doc.get_iter_at_mark(doc.get_insert()).get_line_offset())
+    except Exception:
+        return 0
+
+
+_CONFLICT_CSS_CLASS = "thor-external-conflict"
+_conflict_css_installed = False
+_conflict_screen_provider = None
+_CONFLICT_CSS = (
+    b".thor-external-conflict { border: 2px solid #ff0000;"
+    b" box-shadow: inset 0 0 0 2px #ff0000; }"
+)
+_conflicts: set = set()
+_baselines: dict = {}
+
+
+def _tab_for_doc(window, doc):
+    try:
+        location = doc_location(doc)
+        if location is None:
+            return None
+        return window.get_tab_from_location(location)
+    except Exception:
+        return None
+
+
+def _view_for_doc(window, doc):
+    try:
+        tab = _tab_for_doc(window, doc)
+        if tab is None:
+            return None
+        return tab.get_view()
+    except Exception:
+        return None
+
+
+def _ensure_conflict_css() -> bool:
+    """Legacy screen-level install; kept for compat, widget-level is primary."""
+    global _conflict_css_installed
+    if _conflict_css_installed or Gtk is None:
+        return _conflict_css_installed
+    try:
+        prov = Gtk.CssProvider()
+        prov.load_from_data(_CONFLICT_CSS)
+        from gi.repository import Gdk  # type: ignore
+        scr = Gdk.Screen.get_default()
+        if scr is None:
+            return False
+        Gtk.StyleContext.add_provider_for_screen(
+            scr, prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+        _conflict_css_installed = True
+        global _conflict_screen_provider
+        _conflict_screen_provider = prov
+        return True
+    except Exception as e:
+        logger.debug("conflict css install failed: %r", e, exc_info=True)
+        return False
+
+
+def _conflict_widgets(window, doc) -> list:
+    """View + scrolled window for a doc; border paints on the scrolled frame."""
+    widgets: list = []
+    try:
+        tab = _tab_for_doc(window, doc)
+        if tab is None:
+            return widgets
+        try:
+            view = tab.get_view()
+        except Exception:
+            view = None
+        if view is not None:
+            widgets.append(view)
+        for attr in ("_scrolled", "_scrolled_window", "_scroll"):
+            try:
+                scrolled = getattr(tab, attr, None)
+            except Exception:
+                scrolled = None
+            if scrolled is not None and scrolled not in widgets:
+                widgets.append(scrolled)
+                break
+    except Exception:
+        pass
+    return widgets
+
+
+def _ensure_widget_css(widget) -> bool:
+    if Gtk is None:
+        return False
+    try:
+        if getattr(widget, "_thor_conflict_provider", None) is not None:
+            return True
+        prov = Gtk.CssProvider()
+        prov.load_from_data(_CONFLICT_CSS)
+        widget.get_style_context().add_provider(
+            prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
+        try:
+            widget._thor_conflict_provider = prov  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        logger.debug("conflict widget css failed: %r", e, exc_info=True)
+        return False
+
+
+def _conflict_key(window, doc) -> str | None:
+    try:
+        return doc_file_path(doc)
+    except Exception:
+        return None
+
+
+def mark_conflict(window, doc) -> bool:
+    """Draw a red frame around a dirty buffer with a pending external edit."""
+    key = _conflict_key(window, doc)
+    if key is not None:
+        _conflicts.add(key)
+    marked = False
+    try:
+        for widget in _conflict_widgets(window, doc):
+            try:
+                _ensure_widget_css(widget)
+                widget.get_style_context().add_class(_CONFLICT_CSS_CLASS)
+                marked = True
+            except Exception:
+                continue
+        if not marked:
+            _ensure_conflict_css()
+    except Exception as e:
+        logger.debug("mark conflict failed: %r", e, exc_info=True)
+    return bool(marked or key is not None)
+
+
+def clear_conflict(window, doc) -> bool:
+    key = _conflict_key(window, doc)
+    had = False
+    if key is not None and key in _conflicts:
+        _conflicts.discard(key)
+        had = True
+    try:
+        for widget in _conflict_widgets(window, doc):
+            try:
+                widget.get_style_context().remove_class(_CONFLICT_CSS_CLASS)
+                had = True
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug("clear conflict failed: %r", e, exc_info=True)
+    return had
+
+
+def has_conflict(window, doc) -> bool:
+    try:
+        key = _conflict_key(window, doc)
+        if key is not None and key in _conflicts:
+            return True
+    except Exception:
+        pass
+    try:
+        for widget in _conflict_widgets(window, doc):
+            try:
+                if widget.get_style_context().has_class(_CONFLICT_CSS_CLASS):
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
+def _file_mtime(path: str) -> float | None:
+    try:
+        return float(os.path.getmtime(path))
+    except Exception:
+        return None
+
+
+def _ensure_baseline(path: str) -> None:
+    if path in _baselines:
+        return
+    mtime = _file_mtime(path)
+    if mtime is not None:
+        _baselines[path] = mtime
+
+
+def note_saved(window, doc) -> None:
+    try:
+        key = _conflict_key(window, doc)
+        if key is not None:
+            _conflicts.discard(key)
+            mtime = _file_mtime(key)
+            if mtime is not None:
+                _baselines[key] = mtime
+    except Exception:
+        pass
+    try:
+        clear_conflict(window, doc)
+    except Exception:
+        pass
+
+
+def has_save_conflict(window, doc) -> bool:
+    """True when saving doc would overwrite an external change."""
+    try:
+        if not bool(doc.get_modified()):
+            return False
+    except Exception:
+        return False
+    try:
+        path = doc_file_path(doc)
+    except Exception:
+        return False
+    if path is None:
+        return False
+    if path in _conflicts:
+        return True
+    known = _baselines.get(path)
+    if known is None:
+        return False
+    cur = _file_mtime(path)
+    if cur is None or cur == known:
+        return False
+    try:
+        differs = file_differs(doc, path)
+    except Exception:
+        return True
+    if differs is False:
+        _baselines[path] = cur
+        _conflicts.discard(path)
+        return False
+    return True
+
+
+def snapshot_position(window, doc) -> tuple:
+    """(line, line_offset, v_value, h_value); scroll None when no view."""
+    line, offset = cursor_line(doc), cursor_offset(doc)
+    v_value = h_value = None
+    try:
+        view = _view_for_doc(window, doc)
+        if view is not None:
+            try:
+                v_value = float(view.get_vadjustment().get_value())
+            except Exception:
+                pass
+            try:
+                h_value = float(view.get_hadjustment().get_value())
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return (line, offset, v_value, h_value)
+
+
+def restore_position(window, doc, snapshot) -> bool:
+    """Restore cursor + scroll; clamps when the reloaded doc is shorter."""
+    try:
+        line, offset, v_value, h_value = snapshot
+    except Exception:
+        return False
+    try:
+        last = max(0, int(doc.get_line_count()) - 1)
+    except Exception:
+        last = 0
+    clamped_line = min(max(0, int(line)), last)
+    try:
+        try:
+            it = doc.get_iter_at_line_offset(clamped_line, max(0, int(offset)))
+        except Exception:
+            it = doc.get_iter_at_line(clamped_line)
+        doc.place_cursor(it)
+    except Exception as e:
+        logger.debug("restore cursor failed: %r", e, exc_info=True)
+        return False
+    try:
+        view = _view_for_doc(window, doc)
+        if view is None:
+            return True
+        for getter, value in (
+            ("get_vadjustment", v_value),
+            ("get_hadjustment", h_value),
+        ):
+            if value is None:
+                continue
+            try:
+                adj = getattr(view, getter)()
+                upper = float(adj.get_upper())
+                page = float(adj.get_page_size())
+                adj.set_value(min(max(0.0, float(value)), max(0.0, upper - page)))
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug("restore scroll failed: %r", e, exc_info=True)
+    return True
 
 
 def _loader_file(doc, location):
@@ -263,7 +568,15 @@ class AutoReloadManager:
                 tab = None
             if tab is None:
                 continue
-            self._maybe_reload(tab, window)
+            try:
+                if self._maybe_reload(tab, window):
+                    continue
+            except Exception:
+                pass
+            try:
+                self._check_and_reload(window, doc, reason="sweep")
+            except Exception:
+                continue
 
     def _maybe_reload(self, tab, window) -> bool:
         try:
@@ -279,6 +592,16 @@ class AutoReloadManager:
         return self._check_and_reload(window, doc, reason="externally modified")
 
     def _reload_doc(self, window, doc, location, reason: str) -> bool:
+        # Save-vs-external race: re-check clean state synchronously before
+        # starting the async load. The user may have typed between the
+        # monitor event and now; never clobber unsaved edits.
+        if not should_reload(doc):
+            try:
+                if doc.get_modified():
+                    mark_conflict(window, doc)
+            except Exception:
+                pass
+            return False
         if GtkSource is None or GLib is None:
             return False
         try:
@@ -295,7 +618,7 @@ class AutoReloadManager:
         except Exception as e:
             logger.debug(f"reload setup failed: {e!r}")
             return False
-        line = cursor_line(doc)
+        pos = snapshot_position(window, doc)
         if path is not None:
             self._loading.add(path)
         holder = {"loader": loader}
@@ -310,6 +633,11 @@ class AutoReloadManager:
             try:
                 if not should_reload(doc):
                     logger.debug("reload done: buffer dirty now, keeping user edits")
+                    try:
+                        if doc.get_modified():
+                            mark_conflict(window, doc)
+                    except Exception:
+                        pass
                     return
             except Exception as e:
                 logger.debug("reload done: should_reload re-check failed: %r", e, exc_info=True)
@@ -321,13 +649,15 @@ class AutoReloadManager:
                 return
             if not ok:
                 return
+            restore_position(window, doc, pos)
             try:
-                last = max(0, int(doc.get_line_count()) - 1)
-                doc.place_cursor(doc.get_iter_at_line(min(max(0, line), last)))
-            except Exception as e:
-                logger.debug("reload cursor restore failed: %r", e, exc_info=True)
+                if path is not None:
+                    mtime = _file_mtime(path)
+                    if mtime is not None:
+                        _baselines[path] = mtime
+            except Exception:
+                pass
             self._clear_modified_state(window, doc)
-            logger.debug(f"reloaded {path if path is not None else location} (clean, {reason})")
         try:
             loader.load_async(GLib.PRIORITY_DEFAULT, None, None, None, _done, None)
         except Exception as e:
@@ -341,10 +671,7 @@ class AutoReloadManager:
     def _clear_modified_state(self, window, doc) -> None:
         """Best-effort dismissal of stale externally-modified flag."""
         # Thor uses 0 for normal state; thor's STATE_NORMAL maps similarly.
-        try:
-            normal = 0
-        except Exception:
-            return
+        normal = 0
         try:
             location = doc_location(doc)
             tab = window.get_tab_from_location(location) if location is not None else None
@@ -356,6 +683,7 @@ class AutoReloadManager:
             tab.set_state(normal)
         except Exception as e:
             logger.debug(f"state reset failed: {e!r}")
+        clear_conflict(window, doc)
 
     def _find_doc(self, window, path: str):
         try:
@@ -372,6 +700,11 @@ class AutoReloadManager:
 
     def _check_and_reload(self, window, doc, reason: str) -> bool:
         if not should_reload(doc):
+            try:
+                if doc_location(doc) is not None and doc.get_modified():
+                    mark_conflict(window, doc)
+            except Exception:
+                pass
             return False
         location = doc_location(doc)
         if location is None:
@@ -386,6 +719,13 @@ class AutoReloadManager:
             except Exception:
                 differs = None
             if differs is False:
+                try:
+                    mtime = _file_mtime(path)
+                    if mtime is not None:
+                        _baselines[path] = mtime
+                except Exception:
+                    pass
+                clear_conflict(window, doc)
                 return False
             if differs is None:
                 logger.debug(f"skip reload of {path} (cannot compare)")
@@ -413,6 +753,7 @@ class AutoReloadManager:
             if path not in wanted:
                 self._unwatch(path)
         for path in wanted:
+            _ensure_baseline(path)
             if path not in self._monitors:
                 self._watch(window, path)
 
@@ -468,6 +809,12 @@ class AutoReloadManager:
             return
         if code not in _watched_events():
             return
+        try:
+            doc = self._find_doc(window, path)
+            dirty = bool(doc.get_modified()) if doc is not None else None
+        except Exception:
+            dirty = None
+        logger.debug("file event %s dirty=%r path=%s", code, dirty, path)
         old_id = self._pending.pop(path, None)
         if old_id is not None and GLib is not None:
             try:

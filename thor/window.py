@@ -9,6 +9,11 @@ import pathlib
 
 logger = logging.getLogger(__name__)
 
+# Keys owned by plugins — ThorWindow._on_key_press must never swallow these
+# (panel_hider: Ctrl+B/J/E; fuzzy: Ctrl+P; terminal: Ctrl+` and Ctrl+Shift+T/W).
+_PLUGIN_CTRL_KEYS = frozenset({"p", "b", "j", "e", "grave", "quoteleft", "asciigrave", "`"})
+_PLUGIN_CTRL_SHIFT_KEYS = frozenset({"t", "w"})
+
 try:
     import gi
 
@@ -107,6 +112,8 @@ if Gtk is not None and GObject is not None:
 
             # Do after show so allocation exists; use idle
             def _set_initial_positions():
+                if getattr(self, "_destroyed", False):
+                    return False
                 try:
                     self._restore_panel_state()
                     self.focus_active_editor()
@@ -233,14 +240,17 @@ if Gtk is not None and GObject is not None:
                 self._bottom_panel._notebook.connect("switch-page", _on_bottom_page_switch)
             except Exception:
                 pass
-
             # Track tabs
             self._tabs: list = []
             self._css_provider = None
             self._save_state_timeout_id = None
+            self._destroyed = False
+            self._saving_panel_state = False
 
             def _debounced_save_state():
                 self._save_state_timeout_id = None
+                if getattr(self, "_destroyed", False):
+                    return False
                 self._save_panel_state()
                 return False
 
@@ -312,6 +322,11 @@ if Gtk is not None and GObject is not None:
                 self._bottom_panel.hide()
 
         def _save_panel_state(self) -> None:
+            # Re-entrancy guard: notify handlers above call back in here while
+            # the state dict is mid-update; nested saves would recurse.
+            if getattr(self, "_saving_panel_state", False):
+                return
+            self._saving_panel_state = True
             try:
                 if hasattr(self, "is_maximized"):
                     is_max = bool(self.is_maximized())
@@ -333,6 +348,8 @@ if Gtk is not None and GObject is not None:
                 save_panel_state(self._panel_state)
             except Exception as e:
                 logger.debug("save_panel_state failed: %r", e, exc_info=True)
+            finally:
+                self._saving_panel_state = False
 
         def _restore_panel_state(self) -> None:
             """Apply loaded panel state (visibility, active pages, sizes) to panels."""
@@ -382,8 +399,14 @@ if Gtk is not None and GObject is not None:
             return False
 
         def _on_destroy(self, *_args) -> None:
-            # Real teardown: project monitors, CssProvider. Plugin detaches
-            # beyond project use their own detach() via their owners.
+            # Mark first so pending idle/timeout callbacks bail instead of
+            # emitting on a dead window. Real teardown: project monitors,
+            # CssProvider. Plugin detaches beyond project use their own
+            # detach() via their owners.
+            try:
+                self._destroyed = True
+            except Exception:
+                pass
             if getattr(self, "_save_state_timeout_id", None) is not None and GLib is not None:
                 try:
                     GLib.source_remove(self._save_state_timeout_id)
@@ -406,7 +429,9 @@ if Gtk is not None and GObject is not None:
             prov = getattr(self, "_css_provider", None)
             if prov is not None:
                 try:
-                    Gtk.StyleContext.remove_provider_for_screen(Gdk.Screen.get_default(), prov)  # type: ignore[attr-defined]
+                    screen = Gdk.Screen.get_default() if Gdk is not None else None
+                    if screen is not None:
+                        Gtk.StyleContext.remove_provider_for_screen(screen, prov)  # type: ignore[attr-defined]
                 except Exception:
                     logger.debug("destroy: css provider removal failed", exc_info=True)
                 finally:
@@ -414,10 +439,6 @@ if Gtk is not None and GObject is not None:
                         self._css_provider = None
                     except Exception:
                         logger.debug("destroy: css provider clear failed", exc_info=True)
-
-
-        def _build_menubar(self):
-            return None
 
         def get_menubar(self):
             return None
@@ -600,39 +621,53 @@ if Gtk is not None and GObject is not None:
             return tab
 
         def close_tab(self, tab) -> None:
-            # Find notebook index of this tab widget
-            n = self._notebook.get_n_pages()
-            for i in range(n):
-                if self._notebook.get_nth_page(i) is tab:
-                    self._notebook.remove_page(i)
-                    if tab in self._tabs:
-                        self._tabs.remove(tab)
-                    try:
-                        doc = tab.get_document()
-                        for attr in ("_thor_label_handler_id", "_modified_changed_id"):
-                            hid = getattr(tab, attr, None)
-                            if hid is not None:
-                                try:
-                                    if doc.handler_is_connected(hid):
-                                        doc.disconnect(hid)
-                                except Exception:
-                                    logger.debug("close_tab: disconnect %s failed", attr, exc_info=True)
-                                finally:
-                                    try:
-                                        setattr(tab, attr, None)
-                                    except Exception:
-                                        logger.debug("close_tab: clear %s failed", attr, exc_info=True)
-                    except Exception:
-                        logger.debug("close_tab: handler disconnect failed", exc_info=True)
-                    try:
-                        self.emit("tab-removed", tab)
-                    except Exception:
-                        logger.debug("close_tab: emit tab-removed failed", exc_info=True)
-                    try:
-                        tab.destroy()
-                    except Exception:
-                        logger.debug("close_tab: destroy failed", exc_info=True)
-                    return
+            if tab is None:
+                return
+            # Drop from _tabs first so a remove_page failure (or the
+            # page-removed resync below) can't leave a stale entry behind.
+            try:
+                if tab in self._tabs:
+                    self._tabs.remove(tab)
+            except Exception:
+                logger.debug("close_tab: _tabs remove failed", exc_info=True)
+            # Remove the notebook page; a tab missing from the notebook (e.g.
+            # removed directly via remove_page) still gets cleanup + emit below.
+            try:
+                n = self._notebook.get_n_pages()
+                for i in range(n):
+                    if self._notebook.get_nth_page(i) is tab:
+                        try:
+                            self._notebook.remove_page(i)
+                        except Exception:
+                            logger.debug("close_tab: remove_page failed", exc_info=True)
+                        break
+            except Exception:
+                logger.debug("close_tab: page lookup failed", exc_info=True)
+            try:
+                doc = tab.get_document()
+                for attr in ("_thor_label_handler_id", "_modified_changed_id"):
+                    hid = getattr(tab, attr, None)
+                    if hid is not None:
+                        try:
+                            if doc.handler_is_connected(hid):
+                                doc.disconnect(hid)
+                        except Exception:
+                            logger.debug("close_tab: disconnect %s failed", attr, exc_info=True)
+                        finally:
+                            try:
+                                setattr(tab, attr, None)
+                            except Exception:
+                                logger.debug("close_tab: clear %s failed", attr, exc_info=True)
+            except Exception:
+                logger.debug("close_tab: handler disconnect failed", exc_info=True)
+            try:
+                self.emit("tab-removed", tab)
+            except Exception:
+                logger.debug("close_tab: emit tab-removed failed", exc_info=True)
+            try:
+                tab.destroy()
+            except Exception:
+                logger.debug("close_tab: destroy failed", exc_info=True)
 
         def close_all_tabs(self) -> None:
             for tab in list(self._tabs):
@@ -693,13 +728,28 @@ if Gtk is not None and GObject is not None:
             label_box.show_all()
             dot.hide()
             idx = self._notebook.append_page(tab, label_box)
-            self._notebook.set_tab_reorderable(tab, True)
+            try:
+                self._notebook.set_tab_reorderable(tab, True)
+            except Exception:
+                logger.debug("_add_tab: set_tab_reorderable failed", exc_info=True)
+            # Notebook and _tabs must mutate together — a failure between them
+            # desyncs get_active_tab(). Each emit is isolated so one failing
+            # listener can't skip the other signal.
             self._tabs.append(tab)
             tab.show_all()
+            try:
+                self.emit("tab-added", tab)
+            except Exception:
+                logger.debug("_add_tab: emit tab-added failed", exc_info=True)
             if jump_to:
-                self._notebook.set_current_page(idx)
-                self.emit("active-tab-changed", tab)
-            self.emit("tab-added", tab)
+                try:
+                    self._notebook.set_current_page(idx)
+                except Exception:
+                    logger.debug("_add_tab: set_current_page failed", exc_info=True)
+                try:
+                    self.emit("active-tab-changed", tab)
+                except Exception:
+                    logger.debug("_add_tab: emit active-tab-changed failed", exc_info=True)
             self._update_header()
 
         def _on_page_reordered(self, *args):
@@ -726,6 +776,8 @@ if Gtk is not None and GObject is not None:
             # idle so get_current_page reflects new page; resolve the page
             # inside the callback (captured idx may be stale after reorder/close)
             def _emit():
+                if getattr(self, "_destroyed", False):
+                    return False
                 try:
                     cur = nb.get_current_page()
                     tab = nb.get_nth_page(cur)
@@ -746,6 +798,18 @@ if Gtk is not None and GObject is not None:
                 _emit()
 
         def _on_page_removed(self, *args):
+            # A page removed without close_tab (direct remove_page) would
+            # otherwise leave a stale entry in _tabs forever — resync.
+            try:
+                pages = []
+                for i in range(self._notebook.get_n_pages()):
+                    try:
+                        pages.append(self._notebook.get_nth_page(i))
+                    except Exception:
+                        logger.debug("page removed sync lookup failed", exc_info=True)
+                self._tabs = [t for t in list(self._tabs) if any(p is t for p in pages)]
+            except Exception:
+                logger.debug("page removed sync failed", exc_info=True)
             self._update_header()
 
         def _update_tab_label(self, tab) -> None:
@@ -797,19 +861,34 @@ if Gtk is not None and GObject is not None:
                 return "Untitled"
 
         def _jump_to_line(self, tab, line: int, col: int = -1) -> None:
+            if tab is None:
+                return
             try:
                 doc = tab.get_document()
+                if doc is None:
+                    return
                 try:
-                    count = doc.get_line_count()
+                    count = int(doc.get_line_count())
                 except Exception:
-                    count = line + 1
-                clamped = min(max(0, line), max(0, count - 1))
+                    count = None
+                if count is None:
+                    # Unknown length: pin only the floor, let the buffer clamp.
+                    clamped = max(0, line)
+                else:
+                    # Empty docs report 0/1 lines — never jump past the last one.
+                    clamped = min(max(0, line), max(0, count - 1))
                 if col >= 0:
-                    it = doc.get_iter_at_line_offset(clamped, max(0, col))
+                    try:
+                        it = doc.get_iter_at_line_offset(clamped, max(0, col))
+                    except Exception:
+                        # Offset past end-of-line (or empty doc): line start.
+                        it = doc.get_iter_at_line(clamped)
                 else:
                     it = doc.get_iter_at_line(clamped)
                 doc.place_cursor(it)
                 view = tab.get_view()
+                if view is None:
+                    return
                 view.scroll_to_iter(it, 0.0, False, 0, 0)
                 view.grab_focus()
             except Exception:
@@ -845,20 +924,43 @@ if Gtk is not None and GObject is not None:
                             logger.debug("apply scheme failed", exc_info=True)
                     # Also set view gutter background via CSS fallback for any view
                     try:
+                        old = getattr(self, "_css_provider", None)
+                        if old is not None:
+                            try:
+                                screen = Gdk.Screen.get_default() if Gdk is not None else None
+                                if screen is not None:
+                                    Gtk.StyleContext.remove_provider_for_screen(screen, old)  # type: ignore[attr-defined]
+                            except Exception:
+                                logger.debug("css provider replace-remove failed", exc_info=True)
+                            self._css_provider = None
                         css = b"textview, textview text, .view, GtkSourceView { background-color: #282C34; } .gutter, GtkSourceGutter { background-color: #21252B; }"
                         prov = Gtk.CssProvider()
                         prov.load_from_data(css)
-                        Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)  # type: ignore[attr-defined]
+                        screen = Gdk.Screen.get_default() if Gdk is not None else None
+                        if screen is None:
+                            return
+                        Gtk.StyleContext.add_provider_for_screen(screen, prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)  # type: ignore[attr-defined]
                         self._css_provider = prov
                     except Exception:
                         logger.debug("css provider install failed", exc_info=True)
             except Exception:
                 logger.debug("apply color scheme failed", exc_info=True)
+
         def save_tab(self, tab, save_as: bool = False) -> bool:
             if tab is None:
                 return False
-            doc = tab.get_document()
-            loc = doc.get_location() if hasattr(doc, 'get_location') else None
+            try:
+                doc = tab.get_document()
+            except Exception:
+                logger.debug("save_tab: get_document failed", exc_info=True)
+                return False
+            if doc is None:
+                return False
+            try:
+                loc = doc.get_location() if hasattr(doc, 'get_location') else None
+            except Exception:
+                logger.debug("save_tab: get_location failed", exc_info=True)
+                loc = None
             if loc is None or save_as:
                 # Save As — prompt
                 dlg = None
@@ -867,6 +969,10 @@ if Gtk is not None and GObject is not None:
                     dlg.set_do_overwrite_confirmation(True)
                     if loc is not None:
                         try:
+                            dlg.set_file(loc)
+                        except Exception:
+                            logger.debug("save dialog set_file failed", exc_info=True)
+                        try:
                             dlg.set_current_name(loc.get_basename() or "Untitled")  # type: ignore[union-attr]
                         except Exception:
                             logger.debug("save dialog name failed", exc_info=True)
@@ -874,18 +980,49 @@ if Gtk is not None and GObject is not None:
                     resp = dlg.run()
                     if resp != Gtk.ResponseType.OK:
                         return False
-                    filename = dlg.get_filename()
-                    if not filename:
+                    # Prefer the dialog's Gio.File: get_filename() is None for
+                    # remote (GVFS/URI) locations even though OK was pressed.
+                    chosen = None
+                    try:
+                        chosen = dlg.get_file()
+                    except Exception:
+                        logger.debug("save dialog get_file failed", exc_info=True)
+                        chosen = None
+                    filename = None
+                    if chosen is not None:
+                        loc = chosen
+                        try:
+                            filename = chosen.get_path()
+                        except Exception:
+                            logger.debug("save dialog chosen path failed", exc_info=True)
+                    if loc is None or (chosen is None):
+                        try:
+                            filename = dlg.get_filename()
+                        except Exception:
+                            logger.debug("save dialog get_filename failed", exc_info=True)
+                            filename = None
+                        if not filename:
+                            return False
+                        loc = Gio.File.new_for_path(filename)  # type: ignore[union-attr]
+                    if loc is None:
                         return False
-                    loc = Gio.File.new_for_path(filename)  # type: ignore[union-attr]
                     doc.set_location(loc)  # type: ignore[attr-defined]
+                    # Display name falls back to the Gio basename so remote
+                    # (no local path) saves still relabel the tab.
+                    display_name = filename
+                    if not display_name:
+                        try:
+                            display_name = loc.get_basename() or loc.get_uri()
+                        except Exception:
+                            logger.debug("save display name failed", exc_info=True)
+                            display_name = None
                     try:
                         # update language
                         import gi
                         gi.require_version("GtkSource","4")
                         from gi.repository import GtkSource as _GS  # type: ignore
                         lm = _GS.LanguageManager.get_default()
-                        lang = lm.guess_language(filename, None)
+                        lang = lm.guess_language(display_name, None)
                         if lang:
                             doc.set_language(lang)  # type: ignore[attr-defined]
                     except Exception:
@@ -893,8 +1030,8 @@ if Gtk is not None and GObject is not None:
                     # update tab label
                     try:
                         lbl = getattr(tab, "_thor_label", None)
-                        if lbl:
-                            lbl.set_text(os.path.basename(filename))
+                        if lbl and display_name:
+                            lbl.set_text(os.path.basename(display_name))
                     except Exception:
                         logger.debug("save label update failed", exc_info=True)
                 except Exception:
@@ -906,7 +1043,42 @@ if Gtk is not None and GObject is not None:
                             dlg.destroy()
                         except Exception:
                             logger.debug("save dialog destroy failed", exc_info=True)
-            # Emit SAVING for plugins like autoreload/git-inline-diff; NORMAL only on success
+            # Autoreload save guard: dirty buffer + file changed on disk since
+            # baseline means saving would silently overwrite external edits.
+            if loc is not None and not save_as:
+                try:
+                    from .autoreload import has_save_conflict, note_saved as _ar_note_saved
+                    if has_save_conflict(self, doc):
+                        if Gtk is None:
+                            logger.warning("save blocked: file changed on disk")
+                            return False
+                        try:
+                            dlg = Gtk.MessageDialog(
+                                transient_for=self,
+                                flags=Gtk.DialogFlags.MODAL,
+                                message_type=Gtk.MessageType.WARNING,
+                                buttons=Gtk.ButtonsType.NONE,
+                                text="File changed on disk — overwrite?",
+                            )
+                            dlg.format_secondary_text(
+                                "Your unsaved changes conflict with external edits. "
+                                "Saving now will overwrite the changes on disk."
+                            )
+                            dlg.add_button("Cancel", Gtk.ResponseType.CANCEL)
+                            dlg.add_button("Overwrite Anyway", Gtk.ResponseType.OK)
+                            try:
+                                resp = dlg.run()
+                            finally:
+                                dlg.destroy()
+                            if resp != Gtk.ResponseType.OK:
+                                return False
+                        except Exception:
+                            logger.debug("save conflict dialog failed", exc_info=True)
+                            return False
+                except ImportError:
+                    pass
+                except Exception:
+                    logger.debug("save conflict check failed", exc_info=True)
             try:
                 tab.set_state(3)  # SAVING
                 self.emit("active-tab-state-changed", tab)
@@ -919,6 +1091,11 @@ if Gtk is not None and GObject is not None:
                 logger.debug("tab.save failed", exc_info=True)
                 ok = False
             if ok:
+                try:
+                    from .autoreload import note_saved as _ar_note_saved_ok
+                    _ar_note_saved_ok(self, doc)
+                except Exception:
+                    pass
                 try:
                     tab.set_state(0)  # NORMAL
                     self.emit("active-tab-state-changed", tab)
@@ -944,12 +1121,21 @@ if Gtk is not None and GObject is not None:
 
         def _on_key_press(self, widget, event) -> bool:
             # Thor-native save handling (XFCE traditional). Plugins also listen.
+            # Plugin-owned keys fall through explicitly (return False) so this
+            # handler can never swallow them, regardless of later edits below:
+            # panel_hider Ctrl+B/J/E, fuzzy Ctrl+P, terminal Ctrl+` and
+            # Ctrl+Shift+T/W.
             try:
                 mods = event.state & Gtk.accelerator_get_default_mod_mask()  # type: ignore[union-attr]
                 keyval = event.keyval
                 keyname = (Gdk.keyval_name(keyval) or "").lower()  # type: ignore[union-attr]
                 ctrl = bool(mods & Gdk.ModifierType.CONTROL_MASK)  # type: ignore[union-attr]
                 shift = bool(mods & Gdk.ModifierType.SHIFT_MASK)  # type: ignore[union-attr]
+                if ctrl and keyname:
+                    if not shift and keyname in _PLUGIN_CTRL_KEYS:
+                        return False
+                    if shift and keyname in _PLUGIN_CTRL_SHIFT_KEYS:
+                        return False
                 if ctrl and not shift and keyname == "s":
                     self.save_active_tab(save_as=False)
                     return True
