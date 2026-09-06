@@ -1,4 +1,4 @@
-"""Tests for panel state persistence, XDG integration, and startup editor focus."""
+"""Tests for window/panel state persistence (TOML), XDG integration, and startup focus."""
 
 from __future__ import annotations
 
@@ -7,16 +7,16 @@ import os
 import tempfile
 import pytest
 
-from thor import panel_state, xdg
+from thor import state, xdg
 
 
-def test_xdg_panel_state_path():
+def test_xdg_state_path():
     with tempfile.TemporaryDirectory() as tmp:
         saved = os.environ.get("XDG_CONFIG_HOME")
         os.environ["XDG_CONFIG_HOME"] = tmp
         try:
-            expected = os.path.join(tmp, "thor", "panel_state.json")
-            assert xdg.panel_state_path() == expected
+            expected = os.path.join(tmp, "thor", "state.toml")
+            assert xdg.state_path() == expected
         finally:
             if saved is not None:
                 os.environ["XDG_CONFIG_HOME"] = saved
@@ -24,37 +24,37 @@ def test_xdg_panel_state_path():
                 os.environ.pop("XDG_CONFIG_HOME", None)
 
 
-def test_load_default_panel_state_when_missing():
+def test_load_default_state_when_missing():
     with tempfile.TemporaryDirectory() as tmp:
-        non_existent = os.path.join(tmp, "does_not_exist.json")
-        state = panel_state.load_panel_state(non_existent)
-        assert state == panel_state.DEFAULT_PANEL_STATE
+        non_existent = os.path.join(tmp, "does_not_exist.toml")
+        loaded = state.load_state(non_existent)
+        assert loaded == state.DEFAULT_STATE
         # Ensure it's a copy
-        state["side_panel_visible"] = False
-        assert panel_state.DEFAULT_PANEL_STATE["side_panel_visible"] is True
+        loaded["side_panel_visible"] = False
+        assert state.DEFAULT_STATE["side_panel_visible"] is True
 
 
-def test_load_panel_state_corrupt_or_partial_json():
+def test_load_state_corrupt_or_partial_toml():
     with tempfile.TemporaryDirectory() as tmp:
-        path = os.path.join(tmp, "corrupt.json")
+        path = os.path.join(tmp, "corrupt.toml")
         with open(path, "w", encoding="utf-8") as f:
-            f.write("{invalid json...")
-        state = panel_state.load_panel_state(path)
-        assert state == panel_state.DEFAULT_PANEL_STATE
+            f.write("side_panel_visible = [unclosed\n")
+        loaded = state.load_state(path)
+        assert loaded == state.DEFAULT_STATE
 
-        # Partial JSON
+        # Partial TOML
         with open(path, "w", encoding="utf-8") as f:
-            f.write(json.dumps({"side_panel_visible": False, "side_panel_size": 350}))
-        state2 = panel_state.load_panel_state(path)
-        assert state2["side_panel_visible"] is False
-        assert state2["side_panel_size"] == 350
-        assert state2["bottom_panel_visible"] == panel_state.DEFAULT_PANEL_STATE["bottom_panel_visible"]
-        assert state2["bottom_panel_size"] == panel_state.DEFAULT_PANEL_STATE["bottom_panel_size"]
+            f.write("side_panel_visible = false\nside_panel_size = 350\n")
+        loaded2 = state.load_state(path)
+        assert loaded2["side_panel_visible"] is False
+        assert loaded2["side_panel_size"] == 350
+        assert loaded2["bottom_panel_visible"] == state.DEFAULT_STATE["bottom_panel_visible"]
+        assert loaded2["bottom_panel_size"] == state.DEFAULT_STATE["bottom_panel_size"]
 
 
-def test_save_and_load_panel_state_roundtrip():
+def test_save_and_load_state_roundtrip():
     with tempfile.TemporaryDirectory() as tmp:
-        path = os.path.join(tmp, "thor", "panel_state.json")
+        path = os.path.join(tmp, "thor", "state.toml")
         custom_state = {
             "side_panel_visible": False,
             "side_panel_size": 280,
@@ -68,9 +68,31 @@ def test_save_and_load_panel_state_roundtrip():
             "window_height": 900,
             "window_maximized": True,
         }
-        panel_state.save_panel_state(custom_state, path)
-        loaded = panel_state.load_panel_state(path)
+        state.save_state(custom_state, path)
+        loaded = state.load_state(path)
         assert loaded == custom_state
+
+
+def test_none_coordinates_survive_roundtrip():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "state.toml")
+        custom_state = dict(state.DEFAULT_STATE)
+        custom_state["side_panel_size"] = 300
+        state.save_state(custom_state, path)
+        loaded = state.load_state(path)
+        assert loaded == custom_state
+        assert loaded["window_x"] is None
+        assert loaded["window_y"] is None
+
+
+def test_legacy_json_migration(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    legacy = tmp_path / "thor" / "panel_state.json"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(json.dumps({"side_panel_visible": False, "side_panel_size": 350}), encoding="utf-8")
+    loaded = state.load_state()
+    assert loaded["side_panel_visible"] is False
+    assert loaded["side_panel_size"] == 350
 
 
 def test_thor_panel_target_visibility():
@@ -107,7 +129,7 @@ def test_window_panel_state_restore_and_focus(monkeypatch):
     from thor.window import ThorWindow
 
     with tempfile.TemporaryDirectory() as tmp:
-        state_file = os.path.join(tmp, "panel_state.json")
+        state_file = os.path.join(tmp, "state.toml")
         saved_state = {
             "side_panel_visible": False,
             "side_panel_size": 290,
@@ -116,9 +138,9 @@ def test_window_panel_state_restore_and_focus(monkeypatch):
             "bottom_panel_size": 210,
             "bottom_panel_active_page": 0,
         }
-        panel_state.save_panel_state(saved_state, state_file)
+        state.save_state(saved_state, state_file)
 
-        monkeypatch.setattr(xdg, "panel_state_path", lambda: state_file)
+        monkeypatch.setattr(xdg, "state_path", lambda: state_file)
 
         app = Gtk.Application(application_id="dev.thor.testpanelstate")
         win = ThorWindow(app=app, initial_folder=None)
@@ -156,7 +178,7 @@ def test_window_panel_state_restore_and_focus(monkeypatch):
             # Changing panel visibility updates panel state file
             win._side_panel.set_target_visible(True)
             win._save_panel_state()
-            reloaded = panel_state.load_panel_state(state_file)
+            reloaded = state.load_state(state_file)
             assert reloaded["side_panel_visible"] is True
         finally:
             win.destroy()
@@ -168,7 +190,7 @@ def test_window_position_and_size_persistence(monkeypatch):
     from thor.window import ThorWindow
 
     with tempfile.TemporaryDirectory() as tmp:
-        state_file = os.path.join(tmp, "panel_state.json")
+        state_file = os.path.join(tmp, "state.toml")
         saved_state = {
             "side_panel_visible": True,
             "bottom_panel_visible": False,
@@ -182,8 +204,8 @@ def test_window_position_and_size_persistence(monkeypatch):
             "window_height": 768,
             "window_maximized": False,
         }
-        panel_state.save_panel_state(saved_state, state_file)
-        monkeypatch.setattr(xdg, "panel_state_path", lambda: state_file)
+        state.save_state(saved_state, state_file)
+        monkeypatch.setattr(xdg, "state_path", lambda: state_file)
 
         app = Gtk.Application(application_id="dev.thor.testwinpos")
         win = ThorWindow(app=app, initial_folder=None)
@@ -195,7 +217,7 @@ def test_window_position_and_size_persistence(monkeypatch):
 
             # Calling _save_panel_state persists current window position and size
             win._save_panel_state()
-            reloaded = panel_state.load_panel_state(state_file)
+            reloaded = state.load_state(state_file)
             assert reloaded["window_width"] == 1024
             assert reloaded["window_height"] == 768
             assert reloaded["window_x"] is not None
@@ -210,7 +232,7 @@ def test_window_manager_close_persists_state(monkeypatch):
     from thor.window import ThorWindow
 
     with tempfile.TemporaryDirectory() as tmp:
-        state_file = os.path.join(tmp, "panel_state.json")
+        state_file = os.path.join(tmp, "state.toml")
         saved_state = {
             "side_panel_visible": True,
             "bottom_panel_visible": False,
@@ -224,8 +246,8 @@ def test_window_manager_close_persists_state(monkeypatch):
             "window_height": 750,
             "window_maximized": False,
         }
-        panel_state.save_panel_state(saved_state, state_file)
-        monkeypatch.setattr(xdg, "panel_state_path", lambda: state_file)
+        state.save_state(saved_state, state_file)
+        monkeypatch.setattr(xdg, "state_path", lambda: state_file)
 
         app = Gtk.Application(application_id="dev.thor.testwmclose")
         win = ThorWindow(app=app, initial_folder=None)
@@ -244,7 +266,7 @@ def test_window_manager_close_persists_state(monkeypatch):
         assert handled is False  # allows window to close
 
         # Verify state is saved on delete-event without Ctrl-Q
-        reloaded = panel_state.load_panel_state(state_file)
+        reloaded = state.load_state(state_file)
         assert reloaded["side_panel_visible"] is False
         assert reloaded["window_width"] == 1200
         assert reloaded["window_height"] == 820

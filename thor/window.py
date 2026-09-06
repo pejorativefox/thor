@@ -20,7 +20,7 @@ except Exception:  # headless
 
 from .panel import ThorPanel
 from .document import ThorDocument, ThorTab
-from .panel_state import load_panel_state, save_panel_state
+from .state import load_state as load_panel_state, save_state as save_panel_state
 
 if Gtk is not None and GObject is not None:
 

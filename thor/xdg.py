@@ -193,9 +193,9 @@ def pending_root_path() -> str:
     return os.path.join(cache_home(), "thor", "project-mode", "pending-root")
 
 
-def panel_state_path() -> str:
-    """Path to the persistent panel/window state JSON file in XDG config."""
-    path = os.path.join(config_home(), "thor", "panel_state.json")
+def state_path() -> str:
+    """Path to the persistent window/panel state TOML file in XDG config."""
+    path = os.path.join(config_home(), "thor", "state.toml")
     ensure_dir(os.path.dirname(path))
     return path
 
@@ -216,6 +216,6 @@ __all__ = [
     "marker_log_path",
     "roslyn_log_dir",
     "pending_root_path",
-    "panel_state_path",
+    "state_path",
 ]
 
