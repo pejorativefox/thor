@@ -61,5 +61,25 @@ def attach_builtin_plugins(window, initial_folder: str | None = None) -> None:
             mod.attach(window, **kwargs)
             logger.debug("%s attached", name)
         except Exception as e:
-            logger.debug("%s attach failed", name, exc_info=True)
             logger.exception("%s attach failed: %r", name, e)
+
+    # Restore loaded panel states (visibility, sizes, active tab)
+    if hasattr(window, "_restore_panel_state"):
+        try:
+            window._restore_panel_state()
+        except Exception as e:
+            logger.debug("restore panel state failed: %r", e, exc_info=True)
+
+    # Always ensure the active editor view is focused on startup
+    if hasattr(window, "focus_active_editor"):
+        try:
+            from gi.repository import GLib  # type: ignore
+            if GLib is not None:
+                GLib.idle_add(window.focus_active_editor)
+            else:
+                window.focus_active_editor()
+        except Exception:
+            try:
+                window.focus_active_editor()
+            except Exception:
+                pass

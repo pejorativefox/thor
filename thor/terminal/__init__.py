@@ -8,6 +8,7 @@ interface indirection, no dynamic typelib hacks.
 from __future__ import annotations
 
 import logging
+import signal
 
 logger = logging.getLogger(__name__)
 
@@ -429,7 +430,7 @@ if Gtk is not None:
             except Exception as e:
                 logger.debug(f"tab label update failed: {e!r}")
 
-        def new_terminal(self) -> None:
+        def new_terminal(self, grab_focus: bool = True) -> None:
             if Vte is None or self.notebook is None:
                 return
             label = unique_label(BASE_LABEL, self._labels)
@@ -483,13 +484,13 @@ if Gtk is not None:
             except Exception:
                 pass
             self._spawn(term, page)
-            try:
-                GLib.idle_add(term.grab_focus)
-            except Exception:
-                pass
+            if grab_focus:
+                try:
+                    GLib.idle_add(term.grab_focus)
+                except Exception:
+                    pass
         def _spawn(self, term, page: int) -> None:
             argv = list(_resolve_shell_argv())
-            pid = None
             # Prefer spawn_async (non-blocking) when the VTE build offers it;
             # fall back to spawn_sync otherwise. Documented here because the
             # async signature varies across VTE versions, so any failure
@@ -510,35 +511,34 @@ if Gtk is not None:
                         lambda _t, _p, _e: None,
                         None,
                     )
-                    # Async launch does not return a pid synchronously;
-                    # record a placeholder so close still destroys the widget.
-                    pid = -1
+                    # Async launch reports pid via callback; None here means
+                    # unknown pid — close destroys the widget only, never kill().
+                    self._pids[id(term)] = None
+                    return
                 except Exception as e:
                     logger.debug("spawn_async failed, trying spawn_sync: %r", e, exc_info=True)
-                    pid = None
-            if pid is None:
+            try:
+                # working_directory=None inherits cwd.
+                ok, pid = term.spawn_sync(
+                    Vte.PtyFlags.DEFAULT,
+                    None,
+                    argv,
+                    None,
+                    GLib.SpawnFlags.DEFAULT,
+                    None,
+                    None,
+                    None,
+                )
+                if not ok:
+                    raise RuntimeError("spawn_sync returned False")
+            except Exception as e:
+                logger.debug(f"terminal spawn failed: {e!r}")
                 try:
-                    # working_directory=None inherits cwd.
-                    ok, pid = term.spawn_sync(
-                        Vte.PtyFlags.DEFAULT,
-                        None,
-                        argv,
-                        None,
-                        GLib.SpawnFlags.DEFAULT,
-                        None,
-                        None,
-                        None,
-                    )
-                    if not ok:
-                        raise RuntimeError("spawn_sync returned False")
-                except Exception as e:
-                    logger.debug(f"terminal spawn failed: {e!r}")
-                    try:
-                        self._set_tab_text(page, f"{self._labels[page]} (failed)")
-                    except Exception as e2:
-                        logger.debug("tab failed label failed: %r", e2, exc_info=True)
-                    logger.error(f"failed to launch {' '.join(argv)}: {e!r}")
-                    return
+                    self._set_tab_text(page, f"{self._labels[page]} (failed)")
+                except Exception as e2:
+                    logger.debug("tab failed label failed: %r", e2, exc_info=True)
+                logger.error(f"failed to launch {' '.join(argv)}: {e!r}")
+                return
             try:
                 self._pids[id(term)] = int(pid) if pid is not None else None
             except Exception as e:
@@ -552,10 +552,10 @@ if Gtk is not None:
                 return None
 
         def _kill_pid(self, pid: int | None) -> None:
-            if pid is None:
+            if pid is None or pid <= 0:
                 return
             try:
-                os.kill(pid, 15)
+                os.kill(pid, signal.SIGTERM)
             except Exception as e:
                 logger.debug("kill child %s failed: %r", pid, e, exc_info=True)
 
@@ -776,7 +776,7 @@ def attach(window) -> object | None:
     # initial terminal
     try:
         if getattr(panel, "notebook", None) is not None:
-            panel.new_terminal()
+            panel.new_terminal(grab_focus=False)
     except Exception as e:
         logger.debug(f"initial terminal failed: {e!r}")
 

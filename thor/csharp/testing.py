@@ -83,7 +83,7 @@ def parse_test_output(text: str, project: str = "") -> TestRun:
 
 
 def list_tests(dotnet: str, project: str) -> List[str]:
-    result = dotnet_cli.run_sync([dotnet, "test", project, "--list-tests", "-v", "q", "--nologo"])
+    result = dotnet_cli.run_sync([dotnet, "test", project, "--list-tests", "-v", "q", "--nologo"], timeout=30)
     if result.returncode != 0:
         logger.debug(f"list_tests failed: {result.stderr[:500]}")
         return []

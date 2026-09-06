@@ -255,6 +255,7 @@ def parse_csproj(path: str) -> ProjectInfo:
 
 
 def load_solution(start_path: str, dotnet: str = "dotnet") -> SolutionModel:
+    start_path = os.path.abspath(start_path)
     sln = find_solution(start_path)
     root = os.path.dirname(sln) if sln else (
         start_path if os.path.isdir(start_path) else os.path.dirname(os.path.abspath(start_path))
@@ -283,7 +284,7 @@ def load_solution(start_path: str, dotnet: str = "dotnet") -> SolutionModel:
         # dosdevices/z: -> /proc, where it aborts (exit 134).
         try:
             root = os.path.commonpath([os.path.dirname(p) for p in projects])
-        except ValueError as e:
+        except (ValueError, OSError) as e:
             logger.debug(f"load_solution commonpath failed: {e!r}")
     model = SolutionModel(path=sln, root_dir=root)
     for csproj in projects:

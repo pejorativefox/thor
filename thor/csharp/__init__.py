@@ -1799,7 +1799,7 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         for uri, ops in ops_by_uri.items():
             if not ops:
                 continue
-            fpath = uri[7:] if uri.startswith("file://") else uri
+            fpath = intel.uri_to_path(uri)
             doc = self._find_doc(fpath)
             try:
                 if doc is not None:

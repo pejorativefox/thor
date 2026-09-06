@@ -135,11 +135,6 @@ if GtkSource is not None:
                 logger.debug("goto_line_offset failed", exc_info=True)
                 return False
 
-            try:
-                super().set_language(lang)
-            except Exception:
-                logger.debug("set_language failed", exc_info=True)
-
         def get_language(self):  # type: ignore[override]
             try:
                 return super().get_language()
@@ -164,7 +159,7 @@ if GtkSource is not None:
             try:
                 if path:
                     try:
-                        st_mode = os.stat(path).st_mode & 0o7777
+                        st_mode = os.stat(path).st_mode & 0o777
                     except OSError:
                         st_mode = None
                     dir_name = os.path.dirname(path) or "."
@@ -351,7 +346,7 @@ else:
                 return False
             try:
                 try:
-                    st_mode = os.stat(path).st_mode & 0o7777
+                    st_mode = os.stat(path).st_mode & 0o777
                 except OSError:
                     st_mode = None
                 dir_name = os.path.dirname(path) or "."

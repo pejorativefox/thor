@@ -125,14 +125,16 @@ class RoslynManager:
             argv += ["--autoLoadProjects"]
             self.server_argv = argv
             try:
-                self.transport = LspTransport(
+                transport = LspTransport(
                     argv,
                     self._on_message,
                     on_exit=self._on_transport_exit,
                     stderr_log_path=stderr_log_path,
                 )
-            except FileNotFoundError:
-                logger.warning(f"RoslynManager: server binary missing: {argv[0]!r}")
+                transport.start()
+                self.transport = transport
+            except (FileNotFoundError, PermissionError, OSError):
+                logger.warning(f"RoslynManager: server spawn failed: {argv[0]!r}", exc_info=True)
                 self.transport = None
                 self.state = "error"
                 self.last_error = f"Roslyn language server not found: {argv[0]!r}"
@@ -307,7 +309,7 @@ class RoslynManager:
     # is fatal here (Contract.Fail -> SIGABRT, exit -6). Gate everything
     # centrally: no caller can kill the server with a non-C# path.
     def did_open(self, path: str, language_id: str, version: int, text: str) -> None:
-        if not path.endswith(".cs"):
+        if not path.lower().endswith(".cs"):
             return
         uri = file_uri(path)
         with self._lock:
@@ -322,7 +324,7 @@ class RoslynManager:
         )
 
     def did_change(self, path: str, version: int, text: str) -> None:
-        if not path.endswith(".cs"):
+        if not path.lower().endswith(".cs"):
             return
         uri = file_uri(path)
         with self._lock:
@@ -349,7 +351,7 @@ class RoslynManager:
         )
 
     def did_close(self, path: str) -> None:
-        if not path.endswith(".cs"):
+        if not path.lower().endswith(".cs"):
             return
         uri = file_uri(path)
         with self._lock:
@@ -366,7 +368,7 @@ class RoslynManager:
         transport.send_notification("textDocument/didClose", {"textDocument": {"uri": uri}})
 
     def did_save(self, path: str, text: str) -> None:
-        if not path.endswith(".cs"):
+        if not path.lower().endswith(".cs"):
             return
         uri = file_uri(path)
         with self._lock:

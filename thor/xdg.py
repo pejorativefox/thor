@@ -177,14 +177,10 @@ def log_dir() -> str:
 
 def marker_log_path() -> str:
     """Canonical path for the thor-csharp marker debug log."""
-    try:
-        ld = log_dir()
-        if os.path.isdir(ld) and os.access(ld, os.W_OK):
-            return os.path.join(ld, "thor-csharp.log")
-    except Exception:
-        pass
-    # Fallback to /tmp if state dir is unwritable
-    return f"/tmp/thor-csharp-{os.getuid()}.log"
+    # Single canonical path under XDG state; no /tmp fallback — a
+    # predictable world-writable fallback is a symlink-hijack vector.
+    # Callers fail open (log write already best-effort) if unwritable.
+    return os.path.join(log_dir(), "thor-csharp.log")
 
 
 def roslyn_log_dir() -> str:
@@ -195,6 +191,13 @@ def roslyn_log_dir() -> str:
 def pending_root_path() -> str:
     """Path to the pending project root handoff file in XDG cache."""
     return os.path.join(cache_home(), "thor", "project-mode", "pending-root")
+
+
+def panel_state_path() -> str:
+    """Path to the persistent panel/window state JSON file in XDG config."""
+    path = os.path.join(config_home(), "thor", "panel_state.json")
+    ensure_dir(os.path.dirname(path))
+    return path
 
 
 __all__ = [
@@ -213,4 +216,6 @@ __all__ = [
     "marker_log_path",
     "roslyn_log_dir",
     "pending_root_path",
+    "panel_state_path",
 ]
+

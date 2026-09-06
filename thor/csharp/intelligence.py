@@ -13,10 +13,20 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlparse
 
 logger = logging.getLogger(__name__)
 
 from .roslyn import file_uri
+
+def uri_to_path(uri: str) -> str:
+    """Decode a file:// URI to a filesystem path (percent-decoding)."""
+    try:
+        if uri.startswith("file://"):
+            return unquote(urlparse(uri).path)
+    except Exception:
+        pass
+    return uri[7:] if uri.startswith("file://") else uri
 
 @dataclass
 class Diagnostic:
@@ -34,7 +44,7 @@ SEVERITY_LABEL = {1: "error", 2: "warning", 3: "info", 4: "hint"}
 
 def normalize_diagnostics(uri: str, raw: list) -> List[Diagnostic]:
     out: List[Diagnostic] = []
-    path = uri[7:] if uri.startswith("file://") else uri
+    path = uri_to_path(uri)
     for item in raw:
         try:
             rng = item.get("range", {}).get("start", {})
@@ -615,7 +625,7 @@ class NavTarget:
 
 
 def _nav_from_lsp_range(uri: str, loc_range: dict) -> NavTarget:
-    path = uri[7:] if uri.startswith("file://") else uri
+    path = uri_to_path(uri)
     start = (loc_range or {}).get("start", {})
     try:
         line = max(0, int(start.get("line", 0)))

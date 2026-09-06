@@ -42,10 +42,11 @@ def _config_dir() -> str:
 class SettingsStore:
     def __init__(self, path: str | None = None) -> None:
         config_dir = _config_dir()
-        os.makedirs(config_dir, exist_ok=True)
+        try:
+            os.makedirs(config_dir, exist_ok=True)
+        except OSError:
+            logger.debug("settings makedirs failed, using in-memory defaults", exc_info=True)
         self._path = path or os.path.join(config_dir, "settings.ini")
-        self._data = dict(DEFAULTS)
-        self.load()
 
     @property
     def path(self) -> str:

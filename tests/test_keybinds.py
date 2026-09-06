@@ -381,3 +381,19 @@ def test_ctrl_comma_wrong_modifiers_ignored():
     assert ns._handle_global_key("comma", True, True, False) is False
     assert ns._handle_global_key("comma", False, False, False) is False
     assert calls == []
+
+
+def test_ctrl_w_closes_active_tab_when_editor_focused(monkeypatch):
+    ns, window, _v, _b, _s = _clip_ns(monkeypatch, ["hello"], focus=True)
+    closed = []
+    window.close_tab = lambda tab: closed.append(tab)
+    assert ns._handle_global_key("w", True, False, False) is True
+    assert closed == [window.active]
+
+
+def test_ctrl_w_falls_through_when_unfocused(monkeypatch):
+    ns, window, _v, _b, _s = _clip_ns(monkeypatch, ["hello"], focus=False)
+    closed = []
+    window.close_tab = lambda tab: closed.append(tab)
+    assert ns._handle_global_key("w", True, False, False) is False
+    assert closed == []

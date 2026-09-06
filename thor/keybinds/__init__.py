@@ -305,12 +305,29 @@ def handle_global_key(*args, **kwargs) -> bool:
         return False
     lowered = (keyname or "").lower()
     # Explicitly decline keys owned by sibling handlers, even though the
-    # generic guard above already rejects most (shifted) variants. This
-    # documents the Ctrl+Shift+W vs window-close conflict: this module
-    # never claims W; the terminal's close-tab handler runs first and the
-    # window must only close when it declines.
-    if lowered in ("b", "p", "f", "g", "w", "grave", "quoteleft", "asciigrave", "`"):
+    # generic guard above already rejects most (shifted) variants.
+    if lowered in ("b", "p", "f", "g", "grave", "quoteleft", "asciigrave", "`"):
         return False
+    if lowered == "w":
+        # Ctrl+W closes the active document tab, but only when the focus
+        # is in the editor — never from the terminal (which owns
+        # Ctrl+Shift+W) or other widgets. Falls through when unfocused.
+        if window is None:
+            return False
+        if _active_editor_view(window) is None:
+            return False
+        try:
+            tab = window.get_active_tab()
+        except Exception:
+            return False
+        if tab is None:
+            return False
+        try:
+            window.close_tab(tab)
+        except Exception as e:
+            logger.debug(f"close tab failed: {e!r}", exc_info=True)
+            return False
+        return True
     if lowered in ("page_up", "kp_page_up"):
         logger.debug("key: Ctrl+PageUp previous-tab")
         # window may be None in legacy/no-window tests; _step_tab handles None gracefully via try

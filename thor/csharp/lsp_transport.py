@@ -28,9 +28,15 @@ def encode_message(payload: dict) -> bytes:
     return header + body
 
 
+_MAX_BUFFER_BYTES = 16 * 1024 * 1024
+
 def decode_messages(buffer: bytearray) -> List[dict]:
     """Pop complete LSP messages off a byte buffer. Mutates buffer in place."""
     messages: List[dict] = []
+    if len(buffer) > _MAX_BUFFER_BYTES:
+        logger.debug("decode_messages: buffer cap exceeded, dropping %d bytes", len(buffer))
+        del buffer[:]
+        return messages
     while True:
         sep = buffer.find(b"\r\n\r\n")
         if sep == -1:
@@ -43,8 +49,8 @@ def decode_messages(buffer: bytearray) -> List[dict]:
                     length = int(line.split(":", 1)[1].strip())
                 except ValueError:
                     length = None
-        if length is None:
-            # Corrupt framing; drop the header and continue.
+        if length is None or length < 0 or length > _MAX_BUFFER_BYTES:
+            # Corrupt framing or absurd size; drop the header and continue.
             del buffer[: sep + 4]
             continue
         start = sep + 4
@@ -102,13 +108,19 @@ class LspTransport:
 
     def start(self) -> None:
         logger.debug(f"LspTransport start: {' '.join(self.argv)}")
-        self._proc = subprocess.Popen(
-            self.argv,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=0,
-        )
+        try:
+            self._proc = subprocess.Popen(
+                self.argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=0,
+            )
+        except OSError:
+            logger.debug("LspTransport start: spawn failed", exc_info=True)
+            self._proc = None
+            self.running = False
+            raise
         self.running = True
         self._reader = threading.Thread(
             target=self._read_loop, name="thor-csharp-lsp-reader", daemon=True
@@ -147,12 +159,8 @@ class LspTransport:
                 proc.wait(timeout=0.5)
             except Exception:
                 logger.debug("LspTransport.stop: no fast clean exit, terminating")
-            for stream in (proc.stdin, proc.stdout, proc.stderr):
-                try:
-                    if stream is not None:
-                        stream.close()
-                except Exception:
-                    logger.debug("LspTransport.stop: stream close failed", exc_info=True)
+            # Reap before closing pipes: closing stdout/stderr first races
+            # the reader threads with read-on-closed-stream + hides the exit.
             try:
                 proc.terminate()
             except Exception:
@@ -164,6 +172,12 @@ class LspTransport:
                     proc.kill()
                 except Exception:
                     logger.debug("LspTransport.stop: kill failed", exc_info=True)
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                try:
+                    if stream is not None:
+                        stream.close()
+                except Exception:
+                    logger.debug("LspTransport.stop: stream close failed", exc_info=True)
             self._proc = None
         self._join_threads()
 

@@ -113,7 +113,7 @@ class StreamingHandle:
             return
         try:
             proc.wait(timeout=2)
-        except Exception:
+        except subprocess.TimeoutExpired:
             try:
                 if proc.poll() is None:
                     proc.kill()
@@ -121,7 +121,6 @@ class StreamingHandle:
                 logger.debug(f"streaming cancel kill failed: {e!r}")
 
     def join(self, timeout: Optional[float] = None) -> None:
-        """Wait for the worker thread (passes ``threading.Thread.join``)."""
         self.thread.join(timeout)
 
 
@@ -186,9 +185,15 @@ def run_streaming(
             logger.debug(f"run_streaming read failed: {e!r}")
         if handle.cancelled.is_set():
             handle.cancel()
-        rc = proc.wait()
+        try:
+            rc = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            rc = proc.wait()
         logger.debug(f"run_streaming done rc={rc}: {' '.join(argv)}")
-        on_done(rc)
 
     thread = threading.Thread(target=_worker, name="thor-csharp-dotnet", daemon=True)
     handle.thread = thread

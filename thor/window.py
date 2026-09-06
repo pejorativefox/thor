@@ -20,6 +20,7 @@ except Exception:  # headless
 
 from .panel import ThorPanel
 from .document import ThorDocument, ThorTab
+from .panel_state import load_panel_state, save_panel_state
 
 if Gtk is not None and GObject is not None:
 
@@ -36,7 +37,31 @@ if Gtk is not None and GObject is not None:
 
         def __init__(self, app: Gtk.Application, initial_folder: str | None = None) -> None:  # type: ignore[name-defined]
             super().__init__(application=app, title="Thor")
-            self.set_default_size(1280, 800)
+
+            # Load persistent panel / window state
+            self._panel_state = load_panel_state()
+            side_vis = bool(self._panel_state.get("side_panel_visible", True))
+            bottom_vis = bool(self._panel_state.get("bottom_panel_visible", False))
+            side_size = max(100, int(self._panel_state.get("side_panel_size", 260)))
+            bottom_size = max(80, int(self._panel_state.get("bottom_panel_size", 200)))
+
+            win_w = max(400, int(self._panel_state.get("window_width", 1280)))
+            win_h = max(300, int(self._panel_state.get("window_height", 800)))
+            self.set_default_size(win_w, win_h)
+
+            win_x = self._panel_state.get("window_x")
+            win_y = self._panel_state.get("window_y")
+            if win_x is not None and win_y is not None:
+                try:
+                    self.move(int(win_x), int(win_y))
+                except Exception:
+                    pass
+
+            if bool(self._panel_state.get("window_maximized", False)):
+                try:
+                    self.maximize()
+                except Exception:
+                    pass
             try:
                 self.set_icon_name("dev.thor.Editor")
             except Exception:
@@ -46,13 +71,12 @@ if Gtk is not None and GObject is not None:
             self._initial_folder = initial_folder
 
             # Main layout: H paned (side | center) + V paned (center | bottom)
-            # (don't add to window yet — batch into vbox to avoid remove dance
-            # that conflicts with GtkApplication's app-menu child)
             self._hpaned = Gtk.Paned(orientation=Gtk.Orientation.HORIZONTAL)
 
             # Side panel — directly in Paned so hide() reclaims space (xfce/mousepad style)
             self._side_panel = ThorPanel(orientation=Gtk.Orientation.VERTICAL)
-            self._side_panel.set_size_request(260, -1)
+            self._side_panel.set_target_visible(side_vis)
+            self._side_panel.set_size_request(side_size, -1)
             self._hpaned.pack1(self._side_panel, False, True)  # shrink True so hide reclaims
 
             # Center vertical split: editor notebook on top, bottom panel below
@@ -70,92 +94,208 @@ if Gtk is not None and GObject is not None:
 
             # Bottom panel — directly in Paned
             self._bottom_panel = ThorPanel(orientation=Gtk.Orientation.HORIZONTAL)
-            self._bottom_panel.set_size_request(-1, 200)
+            self._bottom_panel.set_target_visible(bottom_vis)
+            self._bottom_panel.set_size_request(-1, bottom_size)
             self._vpaned.pack2(self._bottom_panel, False, True)  # shrink True so hide reclaims
+
             # Wrap hpaned (clean frameless content)
             vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
             self._vbox = vbox  # exposed for find bar (thor.find)
             self._menubar = None
             vbox.pack_start(self._hpaned, True, True, 0)
             self.add(vbox)
+
             # Do after show so allocation exists; use idle
             def _set_initial_positions():
                 try:
-                    if self._side_panel.get_visible() and self._side_panel.get_n_items() != 0:
-                        self._hpaned.set_position(260)
-                    else:
-                        self._hpaned.set_position(0)
-                    alloc = self.get_allocation()
-                    h = alloc.height if alloc.height > 0 else 800
-                    if self._bottom_panel.get_visible() and self._bottom_panel.get_n_items() != 0:
-                        self._vpaned.set_position(max(200, h - 240))
-                    else:
-                        self._vpaned.set_position(h)
+                    self._restore_panel_state()
+                    self.focus_active_editor()
                 except Exception:
                     logger.debug("initial paned positions failed", exc_info=True)
                 return False
+
             try:
-                GLib.idle_add(_set_initial_positions)
+                if GLib is not None:
+                    GLib.idle_add(_set_initial_positions)
             except Exception:
                 logger.debug("initial positions idle_add failed", exc_info=True)
+
             vbox.show_all()
-            if self._side_panel.get_n_items() == 0:
+            if self._side_panel.get_n_items() == 0 or not side_vis:
                 self._side_panel.hide()
-            if self._bottom_panel.get_n_items() == 0:
+            if self._bottom_panel.get_n_items() == 0 or not bottom_vis:
                 self._bottom_panel.hide()
+
             # Sync Paned positions with panel visibility so hidden panels reclaim space
-            # Gtk.Paned/Box doesn't reclaim hidden child's size_request without explicit queue_resize (minimal test).
             def _sync_side(*_a):
                 try:
-                    if self._side_panel.get_visible() and self._side_panel.get_n_items() == 0:
+                    is_vis = self._side_panel.get_visible()
+                    n = self._side_panel.get_n_items()
+                    if is_vis and n == 0:
                         # Guard: never show an empty panel
                         self._side_panel.hide()
                         return
-                    if not self._side_panel.get_visible() or self._side_panel.get_n_items() == 0:
+                    if not is_vis or n == 0:
                         self._side_panel.set_size_request(0, -1)
                         self._hpaned.set_position(0)
                         self._hpaned.queue_resize()
                         self.queue_resize()
                     else:
-                        self._side_panel.set_size_request(260, -1)
+                        size = max(100, int(self._panel_state.get("side_panel_size", 260)))
+                        self._side_panel.set_size_request(size, -1)
                         if self._hpaned.get_position() == 0:
-                            self._hpaned.set_position(260)
+                            self._hpaned.set_position(size)
                         self._hpaned.queue_resize()
                         self.queue_resize()
+                    if n > 0:
+                        self._panel_state["side_panel_visible"] = is_vis
+                        self._save_panel_state()
                 except Exception:
                     logger.debug("side panel sync failed", exc_info=True)
+
             def _sync_bottom(*_a):
                 try:
-                    if self._bottom_panel.get_visible() and self._bottom_panel.get_n_items() == 0:
+                    is_vis = self._bottom_panel.get_visible()
+                    n = self._bottom_panel.get_n_items()
+                    if is_vis and n == 0:
                         # Guard: never show an empty panel
                         self._bottom_panel.hide()
                         return
-                    if not self._bottom_panel.get_visible() or self._bottom_panel.get_n_items() == 0:
+                    alloc = self.get_allocation()
+                    h = alloc.height if alloc.height > 0 else 800
+                    if not is_vis or n == 0:
                         self._bottom_panel.set_size_request(-1, 0)
-                        alloc = self.get_allocation()
-                        h = alloc.height if alloc.height > 0 else 800
                         self._vpaned.set_position(h)
                         self._vpaned.queue_resize()
                         self.queue_resize()
                     else:
-                        self._bottom_panel.set_size_request(-1, 200)
-                        alloc = self.get_allocation()
-                        h = alloc.height if alloc.height > 0 else 800
-                        self._vpaned.set_position(max(200, h - 240))
+                        size = max(80, int(self._panel_state.get("bottom_panel_size", 200)))
+                        self._bottom_panel.set_size_request(-1, size)
+                        self._vpaned.set_position(max(100, h - size))
                         self._vpaned.queue_resize()
                         self.queue_resize()
+                    if n > 0:
+                        self._panel_state["bottom_panel_visible"] = is_vis
+                        self._save_panel_state()
                 except Exception:
                     logger.debug("bottom panel sync failed", exc_info=True)
+
             try:
-                # Single notify::visible each — hide/show fire it; ThorPanel's
-                # _sync_visibility -> hide/show covers n_items changes.
                 self._side_panel.connect("notify::visible", _sync_side)
                 self._bottom_panel.connect("notify::visible", _sync_bottom)
             except Exception:
                 logger.debug("panel notify wiring failed", exc_info=True)
+
+            def _on_hpaned_pos(*_a):
+                try:
+                    if self._side_panel.get_visible() and self._side_panel.get_n_items() > 0:
+                        pos = self._hpaned.get_position()
+                        if pos > 80:
+                            self._panel_state["side_panel_size"] = pos
+                            self._save_panel_state()
+                except Exception:
+                    pass
+
+            def _on_vpaned_pos(*_a):
+                try:
+                    if self._bottom_panel.get_visible() and self._bottom_panel.get_n_items() > 0:
+                        alloc = self.get_allocation()
+                        h = alloc.height if alloc.height > 0 else 800
+                        bottom_h = h - self._vpaned.get_position()
+                        if bottom_h > 50:
+                            self._panel_state["bottom_panel_size"] = bottom_h
+                            self._save_panel_state()
+                except Exception:
+                    pass
+
+            try:
+                self._hpaned.connect("notify::position", _on_hpaned_pos)
+                self._vpaned.connect("notify::position", _on_vpaned_pos)
+            except Exception:
+                pass
+
+            def _on_side_page_switch(_nb, _page, page_num):
+                try:
+                    self._panel_state["side_panel_active_page"] = int(page_num)
+                    self._save_panel_state()
+                except Exception:
+                    pass
+
+            def _on_bottom_page_switch(_nb, _page, page_num):
+                try:
+                    self._panel_state["bottom_panel_active_page"] = int(page_num)
+                    self._save_panel_state()
+                except Exception:
+                    pass
+
+            try:
+                self._side_panel._notebook.connect("switch-page", _on_side_page_switch)
+                self._bottom_panel._notebook.connect("switch-page", _on_bottom_page_switch)
+            except Exception:
+                pass
+
             # Track tabs
             self._tabs: list = []
             self._css_provider = None
+            self._save_state_timeout_id = None
+
+            def _debounced_save_state():
+                self._save_state_timeout_id = None
+                self._save_panel_state()
+                return False
+
+            def _on_configure_event(_w, _event):
+                try:
+                    is_max = self.is_maximized()
+                    self._panel_state["window_maximized"] = bool(is_max)
+                    if not is_max:
+                        x, y = self.get_position()
+                        w, h = self.get_size()
+                        if w > 100 and h > 100:
+                            self._panel_state["window_width"] = int(w)
+                            self._panel_state["window_height"] = int(h)
+                            self._panel_state["window_x"] = int(x)
+                            self._panel_state["window_y"] = int(y)
+                    if GLib is not None:
+                        if self._save_state_timeout_id is not None:
+                            GLib.source_remove(self._save_state_timeout_id)
+                        self._save_state_timeout_id = GLib.timeout_add(200, _debounced_save_state)
+                except Exception:
+                    pass
+                return False
+
+            def _on_window_state_event(_w, event):
+                try:
+                    if Gdk is not None:
+                        is_max = bool(event.new_window_state & Gdk.WindowState.MAXIMIZED)
+                        self._panel_state["window_maximized"] = is_max
+                        if not is_max:
+                            x, y = self.get_position()
+                            w, h = self.get_size()
+                            if w > 100 and h > 100:
+                                self._panel_state["window_width"] = int(w)
+                                self._panel_state["window_height"] = int(h)
+                                self._panel_state["window_x"] = int(x)
+                                self._panel_state["window_y"] = int(y)
+                        self._save_panel_state()
+                except Exception:
+                    pass
+                return False
+
+            def _on_unmap(_w):
+                try:
+                    self._save_panel_state()
+                except Exception:
+                    pass
+                return False
+
+            try:
+                self.connect("configure-event", _on_configure_event)
+                self.connect("window-state-event", _on_window_state_event)
+                self.connect("unmap", _on_unmap)
+            except Exception:
+                pass
+
             # Key handling (panel-hider style, etc. plugins hook here too)
             self.connect("key-press-event", self._on_key_press)
             self.connect("delete-event", self._on_delete_event)
@@ -165,15 +305,95 @@ if Gtk is not None and GObject is not None:
             self._apply_color_scheme()
 
             self.show_all()
-            # Re-hide panels if still empty after show_all
-            if self._side_panel.get_n_items() == 0:
+            # Re-hide panels if still empty or not target-visible after show_all
+            if self._side_panel.get_n_items() == 0 or not side_vis:
                 self._side_panel.hide()
-            if self._bottom_panel.get_n_items() == 0:
+            if self._bottom_panel.get_n_items() == 0 or not bottom_vis:
                 self._bottom_panel.hide()
+
+        def _save_panel_state(self) -> None:
+            try:
+                if hasattr(self, "is_maximized"):
+                    is_max = bool(self.is_maximized())
+                    self._panel_state["window_maximized"] = is_max
+                    if not is_max:
+                        try:
+                            if hasattr(self, "get_size"):
+                                w, h = self.get_size()
+                                if w > 100 and h > 100:
+                                    self._panel_state["window_width"] = int(w)
+                                    self._panel_state["window_height"] = int(h)
+                            if hasattr(self, "get_position"):
+                                x, y = self.get_position()
+                                if x is not None and y is not None:
+                                    self._panel_state["window_x"] = int(x)
+                                    self._panel_state["window_y"] = int(y)
+                        except Exception:
+                            pass
+                save_panel_state(self._panel_state)
+            except Exception as e:
+                logger.debug("save_panel_state failed: %r", e, exc_info=True)
+
+        def _restore_panel_state(self) -> None:
+            """Apply loaded panel state (visibility, active pages, sizes) to panels."""
+            try:
+                side_vis = bool(self._panel_state.get("side_panel_visible", True))
+                bottom_vis = bool(self._panel_state.get("bottom_panel_visible", False))
+                self._side_panel.set_target_visible(side_vis)
+                self._bottom_panel.set_target_visible(bottom_vis)
+
+                side_page = int(self._panel_state.get("side_panel_active_page", 0))
+                if 0 <= side_page < self._side_panel.get_n_items():
+                    self._side_panel._notebook.set_current_page(side_page)
+
+                bottom_page = int(self._panel_state.get("bottom_panel_active_page", 0))
+                if 0 <= bottom_page < self._bottom_panel.get_n_items():
+                    self._bottom_panel._notebook.set_current_page(bottom_page)
+
+                if side_vis and self._side_panel.get_n_items() > 0:
+                    side_size = max(100, int(self._panel_state.get("side_panel_size", 260)))
+                    self._hpaned.set_position(side_size)
+                else:
+                    self._hpaned.set_position(0)
+
+                if bottom_vis and self._bottom_panel.get_n_items() > 0:
+                    bottom_size = max(80, int(self._panel_state.get("bottom_panel_size", 200)))
+                    alloc = self.get_allocation()
+                    h = alloc.height if alloc.height > 0 else 800
+                    self._vpaned.set_position(max(100, h - bottom_size))
+                else:
+                    alloc = self.get_allocation()
+                    h = alloc.height if alloc.height > 0 else 800
+                    self._vpaned.set_position(h)
+            except Exception as e:
+                logger.debug("_restore_panel_state failed: %r", e, exc_info=True)
+
+        def focus_active_editor(self) -> bool:
+            """Always place focus on the active editor view on startup or focus requests."""
+            try:
+                tab = self.get_active_tab()
+                if tab is not None:
+                    view = tab.get_view()
+                    if view is not None:
+                        view.grab_focus()
+                        return True
+            except Exception:
+                logger.debug("focus_active_editor failed", exc_info=True)
+            return False
 
         def _on_destroy(self, *_args) -> None:
             # Real teardown: project monitors, CssProvider. Plugin detaches
             # beyond project use their own detach() via their owners.
+            if getattr(self, "_save_state_timeout_id", None) is not None and GLib is not None:
+                try:
+                    GLib.source_remove(self._save_state_timeout_id)
+                    self._save_state_timeout_id = None
+                except Exception:
+                    pass
+            try:
+                self._save_panel_state()
+            except Exception:
+                pass
             try:
                 from .project import detach as _detach_project
 
@@ -294,6 +514,50 @@ if Gtk is not None and GObject is not None:
                     continue
             return None
 
+        def open_file(self, path: str, line_pos: int = -1, col_pos: int = -1, jump_to: bool = True):
+            """Open an out-of-tree or in-tree file path in a tab."""
+            if not path or Gio is None:
+                return None
+            try:
+                abspath = os.path.abspath(os.path.expanduser(path))
+                loc = Gio.File.new_for_path(abspath)
+                return self.create_tab_from_location(
+                    loc, line_pos=line_pos, col_pos=col_pos, create=True, jump_to=jump_to
+                )
+            except Exception as e:
+                logger.warning("open_file %s failed: %r", path, e)
+                return None
+
+        def prompt_open_file(self) -> list[str]:
+            """Prompt user with standard Open File dialog to open out-of-tree or in-tree files."""
+            if Gtk is None:
+                return []
+            dlg = None
+            opened: list[str] = []
+            try:
+                dlg = Gtk.FileChooserDialog(
+                    title="Open File",
+                    transient_for=self,
+                    action=Gtk.FileChooserAction.OPEN,
+                )
+                dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
+                dlg.set_select_multiple(True)
+                if dlg.run() == Gtk.ResponseType.OK:
+                    files = dlg.get_filenames()
+                    for fp in files or []:
+                        tab = self.open_file(fp, jump_to=True)
+                        if tab is not None:
+                            opened.append(fp)
+            except Exception as e:
+                logger.warning("prompt_open_file failed: %r", e)
+            finally:
+                if dlg is not None:
+                    try:
+                        dlg.destroy()
+                    except Exception:
+                        pass
+            return opened
+
         def create_tab(self, jump_to: bool = True):
             doc = ThorDocument(location=None)
             tab = ThorTab(document=doc)
@@ -305,6 +569,7 @@ if Gtk is not None and GObject is not None:
             location: Gio.File,  # type: ignore[name-defined]
             encoding=None,
             line_pos: int = -1,
+            col_pos: int = -1,
             create: bool = True,
             jump_to: bool = True,
         ):
@@ -314,10 +579,15 @@ if Gtk is not None and GObject is not None:
                 if jump_to:
                     self.set_active_tab(existing)
                 if line_pos >= 0:
-                    self._jump_to_line(existing, line_pos)
+                    self._jump_to_line(existing, line_pos, col=col_pos)
                 return existing
-            if not create and not location.query_exists(None):
-                return None
+            if not create:
+                try:
+                    if not location.query_exists(None):
+                        return None
+                except Exception:
+                    logger.debug("create_tab: query_exists failed", exc_info=True)
+                    return None
             tab = ThorTab(location=location)
             try:
                 tab.load_location(location)
@@ -326,7 +596,7 @@ if Gtk is not None and GObject is not None:
             name = self._display_name(location)
             self._add_tab(tab, jump_to=jump_to, title=name)
             if line_pos >= 0:
-                self._jump_to_line(tab, line_pos)
+                self._jump_to_line(tab, line_pos, col=col_pos)
             return tab
 
         def close_tab(self, tab) -> None:
@@ -355,10 +625,13 @@ if Gtk is not None and GObject is not None:
                     except Exception:
                         logger.debug("close_tab: handler disconnect failed", exc_info=True)
                     try:
+                        self.emit("tab-removed", tab)
+                    except Exception:
+                        logger.debug("close_tab: emit tab-removed failed", exc_info=True)
+                    try:
                         tab.destroy()
                     except Exception:
                         logger.debug("close_tab: destroy failed", exc_info=True)
-                    self.emit("tab-removed", tab)
                     return
 
         def close_all_tabs(self) -> None:
@@ -523,10 +796,18 @@ if Gtk is not None and GObject is not None:
                 logger.debug("display name failed", exc_info=True)
                 return "Untitled"
 
-        def _jump_to_line(self, tab, line: int) -> None:
+        def _jump_to_line(self, tab, line: int, col: int = -1) -> None:
             try:
                 doc = tab.get_document()
-                it = doc.get_iter_at_line(max(0, line))
+                try:
+                    count = doc.get_line_count()
+                except Exception:
+                    count = line + 1
+                clamped = min(max(0, line), max(0, count - 1))
+                if col >= 0:
+                    it = doc.get_iter_at_line_offset(clamped, max(0, col))
+                else:
+                    it = doc.get_iter_at_line(clamped)
                 doc.place_cursor(it)
                 view = tab.get_view()
                 view.scroll_to_iter(it, 0.0, False, 0, 0)
@@ -675,6 +956,16 @@ if Gtk is not None and GObject is not None:
                 if ctrl and shift and keyname == "s":
                     self.save_active_tab(save_as=True)
                     return True
+                if ctrl and not shift and keyname == "o":
+                    self.prompt_open_file()
+                    return True
+                if ctrl and shift and keyname == "o":
+                    if hasattr(self._app, "_prompt_open_folder"):
+                        self._app._prompt_open_folder()
+                    return True
+                if ctrl and not shift and keyname == "n":
+                    self.create_tab(jump_to=True)
+                    return True
             except Exception:
                 logger.debug("key press save failed", exc_info=True)
             # Let plugins / window handle other shortcuts; keep default propagation
@@ -683,6 +974,16 @@ if Gtk is not None and GObject is not None:
             return False
 
         def _on_delete_event(self, widget, event) -> bool:
+            if getattr(self, "_save_state_timeout_id", None) is not None and GLib is not None:
+                try:
+                    GLib.source_remove(self._save_state_timeout_id)
+                    self._save_state_timeout_id = None
+                except Exception:
+                    pass
+            try:
+                self._save_panel_state()
+            except Exception:
+                pass
             # Prompt for unsaved? MVP: allow close, plugins may intercept
             unsaved = self.get_unsaved_documents()
             if not unsaved:
@@ -699,8 +1000,10 @@ if Gtk is not None and GObject is not None:
                 dlg.format_secondary_text("Changes will be lost if you close without saving.")
                 dlg.add_button("Cancel", Gtk.ResponseType.CANCEL)
                 dlg.add_button("Close Anyway", Gtk.ResponseType.OK)
-                resp = dlg.run()
-                dlg.destroy()
+                try:
+                    resp = dlg.run()
+                finally:
+                    dlg.destroy()
                 return resp != Gtk.ResponseType.OK
             except Exception:
                 logger.debug("delete event dialog failed", exc_info=True)
