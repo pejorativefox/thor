@@ -1,0 +1,39 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Editors and IDEs
+.vscode/
+.idea/
+*.swp
+*~
+*.bak
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Local debug logs (see thor/csharp/logging_util.py: /tmp/thor-csharp-<uid>.log lives outside
+# the repo; ignore copies if they ever land here)
+xedcsharp-*.log
+thor-csharp-*.log
+thor-*.log
