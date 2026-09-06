@@ -1,0 +1,371 @@
+# -*- coding: utf-8 -*-
+"""Command palette (Ctrl+Shift+P) — VSCode-style command picker."""
+
+from __future__ import annotations
+
+import logging
+import os
+
+logger = logging.getLogger(__name__)
+
+try:
+    import gi
+
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import GObject, Gtk, Gdk, Gio, GLib  # type: ignore
+except Exception:  # headless
+    GObject = Gtk = Gdk = Gio = GLib = None  # type: ignore
+
+from thor.fuzzy.matcher import fuzzy_match, markup_highlight
+
+SETTINGS_FILENAME = "settings.toml"
+DEFAULT_SETTINGS_CONTENT = """# Thor settings (TOML).
+# Informational for now: nothing reads this file yet. Each key below shows
+# the built-in default and where it currently lives in code.
+#
+# [editor] -- hardcoded in ThorView.new_with_buffer (thor/document.py)
+# tab_width = 4
+# insert_spaces_instead_of_tabs = true
+# show_line_numbers = true
+# highlight_current_line = true
+# auto_indent = true
+# indent_on_tab = true
+# show_right_margin = false
+# monospace = true
+#
+# [theme] -- window.py prefers "atom-one-dark"; THOR_DARK=0 forces classic
+# scheme = "atom-one-dark"
+#
+# [csharp] -- currently in thor/plugins/thor-csharp settings.ini, not here
+# dotnet_executable = "dotnet"
+# roslyn_server = "~/.dotnet/tools/roslyn-language-server"
+# roslyn_log_level = "Information"
+# auto_restore = true
+# format_on_save = false
+# test_framework_filter = ""
+#
+# [features] -- currently in feature-toggle settings.ini, not here
+# hide_documents_panel = true
+# close_untitled_on_startup = true
+#
+# Env-only knobs (stay env vars): THOR_DEBUG, THOR_DARK, THOR_STYLE_DIR,
+# THOR_LANG_DIR, SHELL (terminal shell detection).
+"""
+
+(COL_LABEL, COL_MARKUP) = range(2)
+
+
+def default_settings_path() -> str:
+    """Default settings file path (``$XDG_CONFIG_HOME/thor/settings.toml``)."""
+    try:
+        from thor import xdg
+
+        base = xdg.config_home()
+    except Exception:
+        base = os.path.expanduser("~/.config")
+    return os.path.join(base, "thor", SETTINGS_FILENAME)
+
+
+def ensure_settings_file(path: str | None = None) -> str:
+    """Create parent dir + empty ``{}`` settings file if missing; return path."""
+    target = path or default_settings_path()
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        if not os.path.isfile(target):
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(DEFAULT_SETTINGS_CONTENT)
+    except Exception as e:
+        logger.debug(f"ensure settings failed: {e!r}")
+    return target
+
+
+def open_settings(window, path: str | None = None):
+    """Open the default settings file in *window*'s editor."""
+    target = ensure_settings_file(path)
+    try:
+        return window.open_file(target, jump_to=True)
+    except Exception as e:
+        logger.debug(f"open settings failed: {e!r}")
+        return None
+
+
+def get_commands(window) -> list[dict]:
+    """Command registry — add new palette items here."""
+    return [
+        {
+            "label": "Edit Settings file",
+            "detail": "Open the default settings file in the editor",
+            "run": lambda: open_settings(window),
+        },
+    ]
+
+
+def filter_commands(query: str, labels: list[str]) -> list[tuple[str, list[int]]]:
+    """Fuzzy-filter *labels* by *query*; empty query returns all, no positions."""
+    if not (query or "").strip():
+        return [(label, []) for label in labels]
+    scored: list[tuple[float, str, list[int]]] = []
+    for label in labels:
+        try:
+            hit = fuzzy_match(query, label)
+        except Exception:
+            hit = None
+        if hit is not None:
+            scored.append((hit[0], label, list(hit[1])))
+    # ponytail: O(n log n) rescore per keystroke, fine for a handful of commands
+    scored.sort(key=lambda t: (-t[0], len(t[1]), t[1].lower()))
+    return [(label, pos) for _, label, pos in scored]
+
+
+if Gtk is not None:
+
+    class CommandPaletteDialog(Gtk.Dialog):  # type: ignore[misc]
+        def __init__(self, parent=None) -> None:
+            super().__init__(title="Command Palette")
+            self._destroyed = False
+            try:
+                self.connect("destroy", lambda *_a: setattr(self, "_destroyed", True))
+            except Exception:
+                pass
+            try:
+                self.set_modal(True)
+            except Exception:
+                pass
+            if parent is not None:
+                try:
+                    self.set_transient_for(parent)
+                except Exception as e:
+                    logger.debug(f"palette transient_for failed: {e!r}")
+            self.set_default_size(560, 300)
+            self._commands: list[dict] = []
+            self._entry = Gtk.Entry()
+            try:
+                self._entry.set_placeholder_text("Type a command…")
+            except Exception:
+                pass
+            self._entry.connect("changed", lambda _e: self._refilter())
+            self._entry.connect("key-press-event", self._on_entry_key)
+            self._store = Gtk.ListStore(str, str)
+            self._view = Gtk.TreeView.new_with_model(self._store)
+            self._view.set_headers_visible(False)
+            cell = Gtk.CellRendererText()
+            cell.set_property("ellipsize", 2)
+            self._view.append_column(Gtk.TreeViewColumn("Command", cell, markup=COL_MARKUP))
+            self._view.connect("row-activated", lambda _v, _p, _c: self._activate_selected())
+            scrolled = Gtk.ScrolledWindow()
+            scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+            scrolled.add(self._view)
+            area = self.get_content_area()
+            area.pack_start(self._entry, False, False, 0)
+            area.pack_start(scrolled, True, True, 0)
+            self.show_all()
+
+        def set_commands(self, commands: list[dict]) -> None:
+            self._commands = list(commands)
+            self._refilter()
+            try:
+                self._entry.grab_focus()
+            except Exception:
+                pass
+
+        def _refilter(self) -> None:
+            if getattr(self, "_destroyed", False):
+                return
+            try:
+                query = self._entry.get_text()
+            except Exception:
+                return
+            try:
+                self._store.clear()
+            except Exception:
+                return
+            labels = [c["label"] for c in self._commands]
+            for label, positions in filter_commands(query, labels):
+                if getattr(self, "_destroyed", False):
+                    return
+                try:
+                    self._store.append([label, markup_highlight(label, positions)])
+                except Exception:
+                    pass
+            self._select_row(0)
+
+        def _select_row(self, index: int) -> None:
+            if len(self._store) == 0:
+                return
+            index = max(0, min(len(self._store) - 1, index))
+            path = Gtk.TreePath.new_from_indices([index])
+            self._view.get_selection().select_path(path)
+            self._view.scroll_to_cell(path, None, False, 0, 0)
+
+        def _selected_label(self) -> str | None:
+            model, tree_iter = self._view.get_selection().get_selected()
+            if tree_iter is None:
+                if len(self._store) == 0:
+                    return None
+                tree_iter = self._store.get_iter_first()
+            try:
+                return model.get_value(tree_iter, COL_LABEL)
+            except Exception:
+                return None
+
+        def _activate_selected(self) -> None:
+            label = self._selected_label()
+            if not label:
+                return
+            for cmd in self._commands:
+                if cmd["label"] == label:
+                    self.emit("activate-command", label)
+                    return
+
+        __gsignals__ = {
+            "activate-command": (GObject.SignalFlags.RUN_LAST, None, (GObject.TYPE_STRING,)),
+        }
+
+        def _current_index(self) -> int:
+            _model, tree_iter = self._view.get_selection().get_selected()
+            if tree_iter is not None:
+                try:
+                    return self._store.get_path(tree_iter).get_indices()[0]
+                except Exception:
+                    pass
+            return 0
+
+        def _on_entry_key(self, _entry, event) -> bool:
+            try:
+                name = Gdk.keyval_name(event.keyval) or ""
+            except Exception:
+                return False
+            if name in ("Up", "KP_Up", "Down", "KP_Down"):
+                self._select_row(self._current_index() + (-1 if "Up" in name else 1))
+                return True
+            if name in ("Return", "KP_Enter"):
+                self._activate_selected()
+                return True
+            if name == "Escape":
+                self.destroy()
+                return True
+            return False
+
+else:
+
+    class CommandPaletteDialog:  # type: ignore[no-redef]
+        pass
+
+
+class _PaletteManager:
+    def __init__(self, window) -> None:
+        self.window = window
+        self._window_key_id = None
+
+    def attach(self) -> None:
+        if Gtk is None:
+            return
+        try:
+            self._window_key_id = self.window.connect("key-press-event", self._on_window_key_press)
+        except Exception as e:
+            logger.debug(f"palette keys connect failed: {e!r}")
+            self._window_key_id = None
+
+    def detach(self) -> None:
+        if self._window_key_id is not None:
+            try:
+                self.window.disconnect(self._window_key_id)
+            except Exception:
+                pass
+        self._window_key_id = None
+
+    def _handle_global_key(self, keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
+        if ctrl and shift and not alt and (keyname or "").lower() == "p":
+            self._show()
+            return True
+        return False
+
+    def _on_window_key_press(self, _window, event) -> bool:
+        if Gtk is None or Gdk is None:
+            return False
+        try:
+            mods = event.state & Gtk.accelerator_get_default_mod_mask()
+            keyname = Gdk.keyval_name(event.keyval) or ""
+            ctrl = bool(mods & Gdk.ModifierType.CONTROL_MASK)
+            shift = bool(mods & Gdk.ModifierType.SHIFT_MASK)
+            alt = bool(mods & Gdk.ModifierType.MOD1_MASK)
+        except Exception:
+            return False
+        return self._handle_global_key(keyname, ctrl, shift, alt)
+
+    def _show(self) -> None:
+        if Gtk is None:
+            return
+        try:
+            dialog = CommandPaletteDialog(parent=self.window)
+        except Exception as e:
+            logger.debug(f"palette dialog create failed: {e!r}")
+            return
+        commands = get_commands(self.window)
+        dialog.set_commands(commands)
+        by_label = {c["label"]: c for c in commands}
+
+        def _on_activate(_w, label: str):
+            try:
+                by_label[label]["run"]()
+            except Exception as e:
+                logger.debug(f"palette command {label!r} failed: {e!r}")
+            finally:
+                try:
+                    dialog.destroy()
+                except Exception:
+                    pass
+
+        dialog.connect("activate-command", _on_activate)
+        try:
+            dialog.run()
+        finally:
+            try:
+                dialog.destroy()
+            except Exception:
+                pass
+
+
+def attach(window) -> _PaletteManager | None:
+    """Wire palette to *window*. Idempotent; headless-safe (None without Gtk)."""
+    if Gtk is None:
+        return None
+    existing = getattr(window, "_thor_palette_mgr", None)
+    if isinstance(existing, _PaletteManager):
+        return existing
+    manager = _PaletteManager(window)
+    try:
+        window._thor_palette_mgr = manager  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    manager.attach()
+    return manager
+
+
+def detach(window) -> None:
+    try:
+        manager = getattr(window, "_thor_palette_mgr", None)
+    except Exception:
+        manager = None
+    if isinstance(manager, _PaletteManager):
+        try:
+            manager.detach()
+        except Exception:
+            pass
+        try:
+            delattr(window, "_thor_palette_mgr")
+        except Exception:
+            pass
+
+
+__all__ = [
+    "SETTINGS_FILENAME",
+    "CommandPaletteDialog",
+    "default_settings_path",
+    "ensure_settings_file",
+    "open_settings",
+    "get_commands",
+    "filter_commands",
+    "attach",
+    "detach",
+]

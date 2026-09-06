@@ -47,6 +47,7 @@ def attach_builtin_plugins(window, initial_folder: str | None = None) -> None:
         ("terminal", "thor.terminal", {}),
         ("csharp", "thor.csharp", {"initial_folder": initial_folder}),
         ("fuzzy", "thor.fuzzy", {}),
+        ("palette", "thor.palette", {}),
         ("find", "thor.find", {}),
         ("gitdiff", "thor.gitdiff", {}),
         ("occurrences", "thor.occurrences", {}),

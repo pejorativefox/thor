@@ -101,7 +101,7 @@ via `./install.sh` to standard XDG directories:
 | Keys | What it does |
 | ---- | ------------ |
 | `Ctrl+Shift+O` | Open a project folder |
-| `Ctrl+P` | Quickly open any file in the project |
+| `Ctrl+Shift+P` | Command palette (`Edit Settings file` opens `~/.config/thor/settings.toml`) |
 | `Ctrl+B` | Hide/show all panes (focus mode) |
 | `Ctrl+J` / `Ctrl+E` | Toggle bottom / side pane |
 | `Ctrl+PageUp` / `Ctrl+PageDown` | Previous / next tab |
