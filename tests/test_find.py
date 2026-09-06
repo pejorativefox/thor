@@ -132,23 +132,16 @@ def test_find_bar_ctrl_f():
     # get_searchbar shim
     assert win.get_searchbar() is mgr.bar
 
-    # Edit menu exists
-    # find Edit menu by label
-    menubar = win._menubar
-    labels = []
-    for ch in menubar.get_children():
-        try:
-            labels.append(ch.get_label())
-        except Exception:
-            pass
-    assert "Edit" in labels
+    # Menubar is removed
+    assert win.get_menubar() is None
+    assert getattr(win, "_menubar", None) is None
 
     detach(win)
     win.destroy()
     app.quit()
 
 
-def test_statusbar_removed_from_window():
+def test_chrome_removed_from_window():
     try:
         import gi
 
@@ -165,20 +158,23 @@ def test_statusbar_removed_from_window():
 
         pytest.skip("no DISPLAY")
 
-    app = Gtk.Application(application_id="dev.thor.teststatusbar")
+    app = Gtk.Application(application_id="dev.thor.testchrome")
     win = ThorWindow(app, initial_folder=None)
     try:
         assert win.get_statusbar() is None
         assert not hasattr(win, "_statusbar")
+        assert win.get_menubar() is None
+        assert getattr(win, "_menubar", None) is None
 
-        def _has_statusbar(widget):
-            if isinstance(widget, Gtk.Statusbar):
+        def _has_widget_type(widget, target_type):
+            if isinstance(widget, target_type):
                 return True
             if hasattr(widget, "get_children"):
-                return any(_has_statusbar(child) for child in widget.get_children())
+                return any(_has_widget_type(child, target_type) for child in widget.get_children())
             return False
 
-        assert not _has_statusbar(win)
+        assert not _has_widget_type(win, Gtk.Statusbar)
+        assert not _has_widget_type(win, Gtk.MenuBar)
     finally:
         win.destroy()
         app.quit()

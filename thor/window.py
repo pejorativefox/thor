@@ -45,9 +45,6 @@ if Gtk is not None and GObject is not None:
             self._app = app
             self._initial_folder = initial_folder
 
-            # Traditional menu bar (not Gio app-menu/headerbar)
-            menubar = self._build_menubar()
-
             # Main layout: H paned (side | center) + V paned (center | bottom)
             # (don't add to window yet — batch into vbox to avoid remove dance
             # that conflicts with GtkApplication's app-menu child)
@@ -75,13 +72,10 @@ if Gtk is not None and GObject is not None:
             self._bottom_panel = ThorPanel(orientation=Gtk.Orientation.HORIZONTAL)
             self._bottom_panel.set_size_request(-1, 200)
             self._vpaned.pack2(self._bottom_panel, False, True)  # shrink True so hide reclaims
-            # Wrap menubar + hpaned (XFCE SSD, not CSD headerbar)
-            # Single add — avoids GtkApplication's extra app-menu child confusion.
+            # Wrap hpaned (clean frameless content)
             vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
             self._vbox = vbox  # exposed for find bar (thor.find)
-            self._menubar = menubar
-            if menubar is not None:
-                vbox.pack_start(menubar, False, False, 0)
+            self._menubar = None
             vbox.pack_start(self._hpaned, True, True, 0)
             self.add(vbox)
             # Do after show so allocation exists; use idle
@@ -203,124 +197,10 @@ if Gtk is not None and GObject is not None:
 
 
         def _build_menubar(self):
-            # XFCE-native traditional menu bar (not HeaderBar/Gio app-menu).
-            # Mirrors mousepad — File, Edit, View, Help. Uses xfwm4 decorations.
-            try:
-                menubar = Gtk.MenuBar()
+            return None
 
-                # File
-                file_menu = Gtk.Menu()
-                file_item = Gtk.MenuItem(label="File")
-                file_item.set_submenu(file_menu)
-                menubar.append(file_item)
-
-                def _add(label, cb):
-                    it = Gtk.MenuItem(label=label)
-                    it.connect("activate", cb)
-                    file_menu.append(it)
-                    return it
-
-                _add("New Window", lambda *_: self._app._new_window() if hasattr(self._app, "_new_window") else None)
-                _add("Open Folder…", lambda *_: self._app._prompt_open_folder() if hasattr(self._app, "_prompt_open_folder") else None)  # type: ignore[attr-defined]
-                _add("Open File…", lambda *_: self._app._prompt_open_file() if hasattr(self._app, "_prompt_open_file") else None)  # type: ignore[attr-defined]
-                file_menu.append(Gtk.SeparatorMenuItem())
-                _add("Close Tab", lambda *_: self.close_tab(self.get_active_tab()) if self.get_active_tab() else None)
-                file_menu.append(Gtk.SeparatorMenuItem())
-                _add("Quit", lambda *_: self._app.quit() if hasattr(self._app, "quit") else Gtk.main_quit())
-
-                # Edit
-                edit_menu = Gtk.Menu()
-                edit_item = Gtk.MenuItem(label="Edit")
-                edit_item.set_submenu(edit_menu)
-                menubar.append(edit_item)
-
-                def _find_show(*_a):
-                    try:
-                        mgr = getattr(self, "_thor_find_mgr", None)
-                        if mgr is not None:
-                            mgr.show()
-                            return
-                        # Lazy attach if host hasn't wired yet (e.g. early menu open)
-                        try:
-                            from thor.find import attach as _attach_find  # type: ignore
-                            m = _attach_find(self)
-                            if m is not None:
-                                m.show()
-                        except Exception:
-                            logger.debug("lazy find attach failed", exc_info=True)
-                    except Exception:
-                        logger.debug("find show failed", exc_info=True)
-
-                def _find_next(*_a):
-                    try:
-                        mgr = getattr(self, "_thor_find_mgr", None)
-                        if mgr is not None:
-                            mgr._go_next()  # type: ignore[attr-defined]
-                    except Exception:
-                        logger.debug("find next failed", exc_info=True)
-
-                def _find_prev(*_a):
-                    try:
-                        mgr = getattr(self, "_thor_find_mgr", None)
-                        if mgr is not None:
-                            mgr._go_prev()  # type: ignore[attr-defined]
-                    except Exception:
-                        logger.debug("find prev failed", exc_info=True)
-
-                it = Gtk.MenuItem(label="Find…")
-                it.connect("activate", _find_show)
-                edit_menu.append(it)
-                it = Gtk.MenuItem(label="Find Next")
-                it.connect("activate", _find_next)
-                edit_menu.append(it)
-                it = Gtk.MenuItem(label="Find Previous")
-                it.connect("activate", _find_prev)
-                edit_menu.append(it)
-
-                # View
-                view_menu = Gtk.Menu()
-                view_item = Gtk.MenuItem(label="View")
-                view_item.set_submenu(view_menu)
-                menubar.append(view_item)
-                # Toggle panels — like View → Side/Bottom Pane
-                def _toggle_side(*_):
-                    try:
-                        vis = self._side_panel.get_visible()
-                        if vis:
-                            self._side_panel.hide()
-                        elif self._side_panel.get_n_items() != 0:
-                            self._side_panel.show()
-                    except Exception:
-                        logger.debug("toggle side panel failed", exc_info=True)
-                def _toggle_bottom(*_):
-                    try:
-                        vis = self._bottom_panel.get_visible()
-                        if vis:
-                            self._bottom_panel.hide()
-                        elif self._bottom_panel.get_n_items() != 0:
-                            self._bottom_panel.show()
-                    except Exception:
-                        logger.debug("toggle bottom panel failed", exc_info=True)
-                it = Gtk.MenuItem(label="Side Panel")
-                it.connect("activate", _toggle_side)
-                view_menu.append(it)
-                it = Gtk.MenuItem(label="Bottom Panel")
-                it.connect("activate", _toggle_bottom)
-                view_menu.append(it)
-                # Help
-                help_menu = Gtk.Menu()
-                help_item = Gtk.MenuItem(label="Help")
-                help_item.set_submenu(help_menu)
-                menubar.append(help_item)
-                it = Gtk.MenuItem(label="About Thor")
-                it.connect("activate", lambda *_: self._app._show_about() if hasattr(self._app, "_show_about") else None)
-                help_menu.append(it)
-
-                menubar.show_all()
-                return menubar
-            except Exception as e:
-                logger.warning("menubar failed: %r", e)
-                return None
+        def get_menubar(self):
+            return None
 
         # ------------------------------------------------------------------
         # ThorWindow API

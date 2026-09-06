@@ -312,11 +312,10 @@ class FindManager:
 
         self.bar = FindBar(self)
         try:
-            # pack after menubar (index 0 is menubar, 1 is hpaned)
+            # pack at top of vbox above hpaned
             vbox.pack_start(self.bar, False, False, 0)
-            # reorder to position 1 so bar sits between menubar and editor
             try:
-                vbox.reorder_child(self.bar, 1)
+                vbox.reorder_child(self.bar, 0)
             except Exception:
                 pass
             # FindBar already did show_all()+hide(); don't show_all on vbox
