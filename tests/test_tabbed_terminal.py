@@ -174,7 +174,7 @@ def test_palette_from_scheme_colors_fills_missing():
 def test_build_vte_theme_none_without_text_colors():
     assert tabbedterminal.build_vte_theme(None) is None
     assert tabbedterminal.build_vte_theme({}) is None
-    # tango/xed-style schemes inherit the GTK theme: keep VTE defaults.
+    # tango-style schemes inherit the GTK theme: keep VTE defaults.
     assert tabbedterminal.build_vte_theme({"gray": "#888A85"}) is None
 
 

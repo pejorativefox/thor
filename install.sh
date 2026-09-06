@@ -3,13 +3,9 @@
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STYLE_DIR="${XED_STYLE_DIR:-$HOME/.local/share/xed/styles}"
-# Thor uses same XDG dirs for styles/lang as xed; keep override via env
-STYLE_DIR="${THOR_STYLE_DIR:-$STYLE_DIR}"
-LANG_DIR="${XED_LANG_DIR:-$HOME/.local/share/gtksourceview-4/language-specs}"
-LANG_DIR="${THOR_LANG_DIR:-$LANG_DIR}"
-BIN_DIR="${XED_BIN_DIR:-$HOME/.local/bin}"
-BIN_DIR="${THOR_BIN_DIR:-$BIN_DIR}"
+STYLE_DIR="${THOR_STYLE_DIR:-$HOME/.local/share/thor/styles}"
+LANG_DIR="${THOR_LANG_DIR:-$HOME/.local/share/gtksourceview-4/language-specs}"
+BIN_DIR="${THOR_BIN_DIR:-$HOME/.local/bin}"
 
 mkdir -p "$STYLE_DIR"
 cp "$SRC_DIR"/styles/*.xml "$STYLE_DIR/"

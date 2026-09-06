@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""thor-open — open file:line in Thor (thor's xed-open)."""
-
+"""thor-open — open file:line in Thor."""
 from __future__ import annotations
 
 import os

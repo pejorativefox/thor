@@ -197,9 +197,9 @@ def test_view_forwarding_without_popup_focus():
     """The editor view forwards nav keys even if the popup never got focus."""
     if _GUI is None:
         pytest.skip("no display")
-    import thor.csharp as xedcsharp
+    import thor.csharp as thorcsharp
 
-    plugin = xedcsharp.CSharpDevKitPlugin.__new__(xedcsharp.CSharpDevKitPlugin)
+    plugin = thorcsharp.CSharpDevKitPlugin.__new__(thorcsharp.CSharpDevKitPlugin)
     popup = _popup()
     plugin.completion_popup = popup
     plugin._completion_forward = None
@@ -221,9 +221,9 @@ def test_view_forwarding_without_popup_focus():
 def test_forwarding_ignored_when_hidden():
     if _GUI is None:
         pytest.skip("no display")
-    import thor.csharp as xedcsharp
+    import thor.csharp as thorcsharp
 
-    plugin = xedcsharp.CSharpDevKitPlugin.__new__(xedcsharp.CSharpDevKitPlugin)
+    plugin = thorcsharp.CSharpDevKitPlugin.__new__(thorcsharp.CSharpDevKitPlugin)
     popup = _popup()  # never shown
     plugin.completion_popup = popup
     plugin._completion_forward = None

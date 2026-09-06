@@ -162,7 +162,7 @@ def test_git_timer_preserves_interval_through_fire():
 
 
 class _FakeSaveTab:
-    """Hashable xed-tab stand-in with a document location."""
+    """Hashable Thor-tab stand-in with a document location."""
 
     def __init__(self, state, path):
         self._state = state
@@ -287,7 +287,7 @@ def test_git_monitor_target_falls_back_without_repo():
         assert projectmode.git_monitor_target("") is None
 
 class _FakeEnumState:
-    """Mimics a real GI Xed.TabState: str() is an int, names are rich."""
+    """Mimics a real GI Thor.TabState: str() is an int, names are rich."""
 
     def __init__(self, num, name, nick):
         self._num = num

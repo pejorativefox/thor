@@ -34,6 +34,5 @@ Thumbs.db
 
 # Local debug logs (see thor/csharp/logging_util.py: /tmp/thor-csharp-<uid>.log lives outside
 # the repo; ignore copies if they ever land here)
-xedcsharp-*.log
 thor-csharp-*.log
 thor-*.log

@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """thor-code — open a folder in Thor (code . equivalent).
 
-Mirrors xed-code but targets Thor and writes to Thor's pending-root
-handoff (with fallback read from xed's handoff so existing xed-code
-calls still work).
+Writes to Thor's pending-root handoff.
 """
 
 from __future__ import annotations

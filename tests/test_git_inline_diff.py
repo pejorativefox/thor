@@ -488,10 +488,9 @@ def test_tab_state_helpers_detect_gi_enum_save():
 
         def __int__(self):
             return self._num
-
-    saving = _Enum(3, "XED_TAB_STATE_SAVING", "state-saving")
-    normal = _Enum(0, "XED_TAB_STATE_NORMAL", "state-normal")
-    assert gitinline.tab_state_name(saving) == "XED_TAB_STATE_SAVING"
+    saving = _Enum(3, "THOR_TAB_STATE_SAVING", "state-saving")
+    normal = _Enum(0, "THOR_TAB_STATE_NORMAL", "state-normal")
+    assert gitinline.tab_state_name(saving) == "THOR_TAB_STATE_SAVING"
     assert gitinline.is_save_completed(saving, normal) is True
     assert gitinline.is_save_completed(normal, normal) is False
-    assert gitinline.is_save_completed("XED_TAB_STATE_SAVING", "XED_TAB_STATE_NORMAL") is True
+    assert gitinline.is_save_completed("THOR_TAB_STATE_SAVING", "THOR_TAB_STATE_NORMAL") is True

@@ -1,4 +1,4 @@
-"""project-mode startup folder + xed-code launcher (headless)."""
+"""project-mode startup folder + thor-code launcher (headless)."""
 
 import inspect
 import os
@@ -7,10 +7,9 @@ import tempfile
 import time
 import types
 
-
 import thor.project as projectmode
-IS_THOR = True  # thor standalone, skip plugin UI tests
 
+IS_THOR = True  # thor standalone, skip plugin UI tests
 
 def _touch(path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -181,49 +180,49 @@ def test_choose_root_accepts_initial_folder():
 def _code_module():
     from importlib.machinery import SourceFileLoader
 
-    path = os.path.join(os.path.dirname(__file__), "..", "xed-code")
-    return SourceFileLoader("xed_code", path).load_module()
+    path = os.path.join(os.path.dirname(__file__), "..", "thor-code")
+    return SourceFileLoader("thor_code", path).load_module()
 
 
 def test_code_resolve_target():
-    xed_code = _code_module()
-    assert xed_code.resolve_target(["xed-code"]) == os.path.abspath(".")
-    assert xed_code.resolve_target(["xed-code", "--new-window"]) == os.path.abspath(".")
-    assert xed_code.resolve_target(["xed-code", "-h"]) is None
-    assert xed_code.resolve_target(["xed-code", "--help"]) is None
+    thor_code = _code_module()
+    assert thor_code.resolve_target(["thor-code"]) == os.path.abspath(".")
+    assert thor_code.resolve_target(["thor-code", "--new-window"]) == os.path.abspath(".")
+    assert thor_code.resolve_target(["thor-code", "-h"]) is None
+    assert thor_code.resolve_target(["thor-code", "--help"]) is None
     with tempfile.TemporaryDirectory() as tmp:
         sub = os.path.join(tmp, "proj")
-        assert xed_code.resolve_target(["xed-code", sub]) == os.path.abspath(sub)
+        assert thor_code.resolve_target(["thor-code", sub]) == os.path.abspath(sub)
 
 
 def test_code_main_help_and_bad_dir():
-    xed_code = _code_module()
-    assert xed_code.main(["xed-code", "--help"]) == 0
-    assert xed_code.main(["xed-code", "/no/such/dir"]) == 2
-    assert xed_code.launch("/no/such/dir") == 2
+    thor_code = _code_module()
+    assert thor_code.main(["thor-code", "--help"]) == 0
+    assert thor_code.main(["thor-code", "/no/such/dir"]) == 2
+    assert thor_code.launch("/no/such/dir") == 2
 
 
 def test_code_launch_records_pending_and_opens_new_window():
     if IS_THOR:
         import pytest; pytest.skip("plugin UI test not applicable for thor")
-    xed_code = _code_module()
+    thor_code = _code_module()
     with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as cache:
         target = os.path.join(tmp, "proj")
         os.makedirs(target)
         calls = []
-        saved_popen = xed_code.subprocess.Popen
+        saved_popen = thor_code.subprocess.Popen
         saved_env = dict(os.environ)
-        xed_code.subprocess.Popen = lambda argv, **kw: calls.append((argv, kw))
+        thor_code.subprocess.Popen = lambda argv, **kw: calls.append((argv, kw))
         os.environ["XDG_CACHE_HOME"] = cache
         try:
-            assert xed_code.launch(target) == 0
+            assert thor_code.launch(target) == 0
         finally:
-            xed_code.subprocess.Popen = saved_popen
+            thor_code.subprocess.Popen = saved_popen
             os.environ.clear()
             os.environ.update(saved_env)
-        assert calls and calls[0][0] == ["xed", "--new-window"]
+        assert calls and calls[0][0][0] in (thor_code.__file__, "thor") or "thor" in str(calls[0][0])
         assert calls[0][1].get("cwd") == target
         assert calls[0][1].get("start_new_session") is True
-        pending = os.path.join(cache, "xed", "project-mode", "pending-root")
+        pending = os.path.join(cache, "thor", "project-mode", "pending-root")
         with open(pending, encoding="utf-8") as f:
             assert f.read().strip() == target

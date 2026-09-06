@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Atom One Dark for xed. Palette: https://github.com/atom/atom one-dark-syntax. -->
+<!-- Atom One Dark for Thor. Palette: https://github.com/atom/atom one-dark-syntax. -->
 
 <style-scheme id="atom-one-dark" _name="Atom One Dark" version="1.0">
 
-  <author>xed-csharp contributors</author>
+  <author>thor-csharp contributors</author>
   <_description>Atom One Dark color scheme</_description>
 
   <color name="bg"          value="#282C34"/>

@@ -1,4 +1,4 @@
-"""Closing xed's blank starter doc (headless, fake window/docs)."""
+"""Closing Thor's blank starter doc (headless, fake window/docs)."""
 
 import os
 import sys

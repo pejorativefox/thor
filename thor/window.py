@@ -303,7 +303,7 @@ if Gtk is not None and GObject is not None:
             return self._statusbar
 
         def get_searchbar(self):
-            # Thor's document find bar (Ctrl+F) — compat shim for Xed API
+            # Thor's document find bar (Ctrl+F)
             mgr = getattr(self, "_thor_find_mgr", None)
             if mgr is not None and getattr(mgr, "bar", None) is not None:
                 return mgr.bar

@@ -32,13 +32,13 @@ def test_fallback_skips_symlinked_dirs():
 
 
 def test_startup_dir_tracks_launch_directory():
-    import thor.csharp as xedcsharp
+    import thor.csharp as thorcsharp
 
     previous = os.getcwd()
     with tempfile.TemporaryDirectory() as tmp:
         try:
             os.chdir(tmp)
-            assert xedcsharp.CSharpDevKitPlugin._startup_dir() == tmp
+            assert thorcsharp.CSharpDevKitPlugin._startup_dir() == tmp
         finally:
             os.chdir(previous)
 
@@ -46,9 +46,9 @@ def test_startup_dir_tracks_launch_directory():
 def test_open_doc_dir_fallback():
     import types
 
-    import thor.csharp as xedcsharp
+    import thor.csharp as thorcsharp
 
-    cls = xedcsharp.CSharpDevKitPlugin
+    cls = thorcsharp.CSharpDevKitPlugin
     loc = types.SimpleNamespace(
         has_uri_scheme=lambda s: s == "file",
         get_path=lambda: "/repo/src/App/Program.cs",

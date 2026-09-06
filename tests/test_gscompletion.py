@@ -397,7 +397,7 @@ def test_attach_detach_view():
 
         provider = _provider()
         attached: set = set()
-        # Plain Gtk.Window lacks Xed's get_views(); emulate an xed window.
+        # Plain Gtk.Window lacks Thor's get_views(); emulate a Thor window.
         fake_window = types.SimpleNamespace(get_views=lambda: [view])
         before = len(view.get_completion().get_providers())
         assert gs_mod.attach_to_views(fake_window, provider, attached) == 1

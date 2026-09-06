@@ -1,19 +1,16 @@
-"""Hiding xed's built-in documents list (headless, fake widgets)."""
+"""Hiding Thor's built-in documents list (headless, fake widgets)."""
 
 import os
 import sys
 import types
 
-import pytest
-
-
 import thor.feature_toggle as featuretoggle
+
 IS_THOR = True  # thor standalone, skip plugin UI tests
 
 HAVE_PLUGIN = hasattr(getattr(featuretoggle, "FeatureTogglePlugin", None), "_hide_documents_panel")
 
-DocsPanel = type("XedDocumentsPanel", (), {})
-
+DocsPanel = type("ThorDocumentsPanel", (), {})
 
 class _Box:
     def __init__(self, children=()):

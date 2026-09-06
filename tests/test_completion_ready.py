@@ -96,15 +96,14 @@ class _FakeContext:
         self.calls.append((list(proposals), finished))
 
 
-def test_populate_send_failure_finishes_and_logs():
+def test_populate_send_failure_finishes_and_logs(caplog):
     provider = gs_mod.RoslynCompletionProvider(
         is_ready=lambda: True,
         resolve_path=lambda _buf: "/tmp/A.cs",
         send_request=lambda _m, _p, _c: None,
     )
     ctx = _FakeContext(_FakeBuffer("Console.Wri"), user=True)
-    provider.do_populate(ctx)
+    with caplog.at_level("ERROR"):
+        provider.do_populate(ctx)
     assert ctx.calls and ctx.calls[-1] == ([], True)
-    marker = f"/tmp/xedcsharp-{os.getuid()}.log"
-    with open(marker, encoding="utf-8") as f:
-        assert "completion request not sent" in f.read()
+    assert any("completion request not sent" in rec.getMessage() for rec in caplog.records)
