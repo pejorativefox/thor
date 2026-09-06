@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Atom One Dark for xed. Palette: https://github.com/atom/atom one-dark-syntax. -->
+
+<style-scheme id="atom-one-dark" _name="Atom One Dark" version="1.0">
+
+  <author>xed-csharp contributors</author>
+  <_description>Atom One Dark color scheme</_description>
+
+  <color name="bg"          value="#282C34"/>
+  <color name="fg"          value="#ABB2BF"/>
+  <color name="faint"       value="#4B5263"/>
+  <color name="gutter-bg"   value="#21252B"/>
+  <color name="cursor"      value="#528BFF"/>
+  <color name="selection"   value="#3E4451"/>
+  <color name="line-hl"     value="#2C313A"/>
+  <color name="red"         value="#E06C75"/>
+  <color name="green"       value="#98C379"/>
+  <color name="yellow"      value="#E5C07B"/>
+  <color name="blue"        value="#61AFEF"/>
+  <color name="purple"      value="#C678DD"/>
+  <color name="cyan"        value="#56B6C2"/>
+  <color name="orange"      value="#D19A66"/>
+  <color name="comment"     value="#5C6370"/>
+  <color name="white"       value="#DCDFE4"/>
+
+  <!-- Editor chrome -->
+  <style name="text"                 foreground="fg"     background="bg"/>
+  <style name="selection"            background="selection"/>
+  <style name="selection-unfocused"  background="selection"/>
+  <style name="cursor"               foreground="cursor"/>
+  <style name="secondary-cursor"     foreground="cursor"/>
+  <style name="current-line"         background="line-hl"/>
+  <style name="line-numbers"         foreground="faint"  background="gutter-bg"/>
+  <style name="line-numbers-border"  foreground="gutter-bg" background="gutter-bg"/>
+  <style name="bracket-match"        foreground="fg"     background="selection" bold="true"/>
+  <style name="bracket-mismatch"     foreground="red"    background="selection" bold="true"/>
+  <style name="right-margin"         foreground="faint"/>
+  <style name="draw-spaces"          foreground="faint"/>
+  <style name="background-pattern"   background="line-hl"/>
+  <style name="search-match"         foreground="bg"     background="yellow"/>
+
+  <!-- Syntax -->
+  <style name="def:comment"          foreground="comment" italic="true"/>
+  <style name="def:shebang"          foreground="comment" italic="true"/>
+  <style name="def:doc-comment"      foreground="comment" italic="true"/>
+  <style name="def:doc-comment-element" foreground="comment"/>
+  <style name="def:string"           foreground="green"/>
+  <style name="def:character"        foreground="green"/>
+  <style name="def:special-char"     foreground="cyan"/>
+  <style name="def:number"           foreground="orange"/>
+  <style name="def:decimal"          foreground="orange"/>
+  <style name="def:base-n-integer"   foreground="orange"/>
+  <style name="def:floating-point"   foreground="orange"/>
+  <style name="def:complex"          foreground="orange"/>
+  <style name="def:boolean"          foreground="orange"/>
+  <style name="def:constant"         foreground="orange"/>
+  <style name="def:special-constant" foreground="orange"/>
+  <style name="def:keyword"          foreground="purple"/>
+  <style name="def:statement"        foreground="purple"/>
+  <style name="def:preprocessor"     foreground="red"/>
+  <style name="def:type"             foreground="yellow"/>
+  <style name="def:function"         foreground="blue"/>
+  <style name="def:identifier"       foreground="red"/>
+  <style name="def:operator"         foreground="cyan"/>
+  <style name="def:builtin"          foreground="cyan"/>
+  <style name="def:error"            foreground="white" background="red" bold="true"/>
+  <style name="def:warning"          underline="true" foreground="yellow"/>
+  <style name="def:note"             foreground="blue" bold="true"/>
+  <style name="def:underlined"       underline="true"/>
+
+  <!-- Markup / misc -->
+  <style name="def:emphasis"         italic="true"/>
+  <style name="def:strong-emphasis"  bold="true"/>
+  <style name="def:heading"          foreground="red" bold="true"/>
+  <style name="def:heading0"         use-style="def:heading"/>
+  <style name="def:heading1"         use-style="def:heading"/>
+  <style name="def:heading2"         use-style="def:heading"/>
+  <style name="def:heading3"         use-style="def:heading"/>
+  <style name="def:heading4"         use-style="def:heading"/>
+  <style name="def:heading5"         use-style="def:heading"/>
+  <style name="def:heading6"         use-style="def:heading"/>
+  <style name="def:inline-code"      foreground="green"/>
+  <style name="def:preformatted-section" foreground="fg"/>
+  <style name="def:link-text"        underline="true" foreground="blue"/>
+  <style name="def:link-symbol"      foreground="purple"/>
+  <style name="def:link-destination" foreground="green"/>
+  <style name="def:list-marker"      foreground="red"/>
+  <style name="def:net-address"      underline="true" foreground="blue"/>
+  <style name="def:thematic-break"   foreground="faint"/>
+  <style name="def:insertion"        foreground="green"/>
+  <style name="def:deletion"         foreground="red"/>
+  <style name="diff:added-line"      foreground="green"/>
+  <style name="diff:removed-line"    foreground="red"/>
+  <style name="diff:changed-line"    foreground="yellow"/>
+  <style name="diff:diff-file"       foreground="fg" bold="true"/>
+  <style name="diff:location"        foreground="comment" italic="true"/>
+  <style name="diff:special-case"    foreground="purple"/>
+  <style name="latex:command"        foreground="purple"/>
+  <style name="latex:include"        foreground="blue"/>
+
+</style-scheme>

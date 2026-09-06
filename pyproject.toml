@@ -1,0 +1,49 @@
+[project]
+name = "thor-editor"
+version = "0.1.0"
+description = "Thor — GtkSourceView editor with baked-in plugins"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "thor-editor contributors"}]
+keywords = ["editor", "gtk", "gtksourceview", "csharp", "roslyn"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Environment :: X11 Applications :: GTK",
+    "Topic :: Text Editors",
+]
+requires-python = ">=3.10"
+dependencies = []
+# System deps (not pip-installable): python3-gi, gir1.2-gtk-3.0, gir1.2-gtksource-4
+
+[project.urls]
+Homepage = "https://github.com/thor-editor/thor"
+Repository = "https://github.com/thor-editor/thor"
+Issues = "https://github.com/thor-editor/thor/issues"
+
+[project.scripts]
+thor = "thor.app:main"
+# thor-code / thor-open remain as standalone scripts (thor-code, thor-open) with
+# pending-root handoff logic; they are installed to ~/.local/bin via ./install.sh.
+# Mapping them to thor.app:main as console_scripts would bypass that handoff,
+# so only `thor` is exposed as a console_script.
+
+[project.optional-dependencies]
+test = ["pytest", "pytest-xvfb"]
+dev = ["pytest", "pytest-xvfb"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+markers = [
+    "display: needs DISPLAY / xvfb (window-spawning tests)",
+]
+xfail_strict = false
+
+[tool.setuptools]
+packages = ["thor"]
+# styles/ and lang/ are installed via ./install.sh to XDG dirs, not via pip.

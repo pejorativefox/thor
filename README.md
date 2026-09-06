@@ -1,0 +1,139 @@
+# Thor — lightweight GtkSourceView editor
+
+A standalone `GtkSourceView` editor that bakes modern comforts in-process (no libpeas). Thor is a fast, native Linux editor with project browser, fuzzy finder, git gutter, C# support, terminal, and more — all via `thor/host.py`.
+
+## What you get
+
+**Project folder browser**
+- Open any folder and browse its files in the side panel.
+- Files are colored by git state, like in VS Code: green means new,
+  tan means changed, red means deleted.
+- Open a folder with `Ctrl+Shift+O`, or straight from the terminal:
+  `thor-code [folder]` works like `code .` and opens the folder in a
+  new Thor window.
+
+**Quick file opener**
+- Press `Ctrl+P`, start typing any part of a file name, and jump to it.
+  It understands capitals (`mc` finds `MyClass.cs`) and multiple words.
+
+**Git change markers**
+- The left edge of the editor shows what changed compared to git:
+  green for added lines, tan for changed lines, red where lines were
+  deleted. Untracked new files show all green. Marks refresh every
+  time you save.
+
+**C# support**
+- Solution explorer, build / run / test per project, a test list with
+  pass/fail marks, clickable error list, code completions, hover help,
+   go-to-definition (`F12`), find references (`Shift+F12`), formatting
+   (`Shift+Alt+F`) and quick fixes (`Alt+Enter`).
+
+**Built-in terminal**
+- A terminal in the bottom panel, with tabs: `Ctrl+Shift+T` opens a
+  new terminal tab, `Ctrl+Shift+W` closes one, `` Ctrl+` `` jumps focus
+  to the terminal and back.
+
+**Less clutter**
+- `Ctrl+B` hides side and bottom panes for distraction-free editing,
+  `Ctrl+J` / `Ctrl+E` toggle bottom / side pane alone.
+
+**Tab switching**
+- `Ctrl+PageDown` jumps to the next tab, `Ctrl+PageUp` to the previous
+  one, wrapping around at either end.
+
+**Auto-reload**
+- Files changed by another program (a build, a git checkout) reload on
+  their own — but only when you have no unsaved edits, so your work is
+  never overwritten.
+
+**Word highlighting**
+- Every occurrence of the word under your cursor lights up in the
+  editor, with matching ticks in the ruler for quick scanning.
+
+**Small helpers**
+- `thor-open 'file.cs:line:col'` opens a file at an exact position —
+  handy for terminal links (`thor-open` understands `file:line` and `file(line)`).
+- One extra dark-friendly color scheme (`styles/atom-one-dark.xml`) is installed automatically
+  and used by default (gutter-friendly, via `GtkSource.StyleSchemeManager`).
+
+## Install
+
+You need **python3-gi**, **gir1.2-gtk-3.0**, **gir1.2-gtksource-4** and for C# the
+**dotnet SDK** plus Roslyn:
+
+```bash
+dotnet tool install --global roslyn-language-server
+pip install -e .          # provides `thor` console script
+# or run without install:
+python -m thor
+./thor-cli
+```
+
+Launch:
+
+```bash
+thor [folder|file ...]           # like `thor .`
+thor-code [folder]               # `code .` equivalent (writes pending-root handoff)
+thor-open 'file.cs:line:col'     # open at location
+THOR_DEBUG=1 thor                # verbose [thor:*] traces + marker log
+```
+
+Styles and `csharp.lang` still go through `./install.sh` to XDG dirs, but
+Thor also reads `styles/` directly from the repo (no enable step — plugins
+baked in via `thor/host.py`).
+
+```bash
+./install.sh  # installs styles/lang to ~/.local/share and launchers to ~/.local/bin
+```
+
+## Everyday shortcuts
+
+| Keys | What it does |
+| ---- | ------------ |
+| `Ctrl+Shift+O` | Open a project folder |
+| `Ctrl+P` | Quickly open any file in the project |
+| `Ctrl+B` | Hide/show all panes (focus mode) |
+| `Ctrl+J` / `Ctrl+E` | Toggle bottom / side pane |
+| `Ctrl+PageUp` / `Ctrl+PageDown` | Previous / next tab |
+| `Ctrl+Shift+T` / `Ctrl+Shift+W` | New / close terminal tab |
+| `` Ctrl+` `` | Jump focus to the terminal and back |
+| `Ctrl+Space` | Code completions (C#) |
+| `F12` / `Shift+F12` | Go to definition / find references (C#) |
+| `Alt+Enter` | Quick fix for the error at the cursor (C#) |
+| `Shift+Alt+F` | Format the file (C#) |
+| `Ctrl+F` / `F3` / `Shift+F3` | Find bar / next / previous |
+
+## Something not working?
+
+Run the self-check first:
+
+```bash
+python3 doctor.py          # checks Thor
+python3 doctor.py --help   # filtered
+```
+
+The usual culprits:
+
+1. **Editor was still running.** Thor is single-instance
+   `GApplication` — a new `thor` command just talks to the old
+   process and new plugins/settings never load. Always use File → Quit all
+   windows first, then start fresh.
+2. **Panes are hidden.** New panels live in the side/bottom panes; turn
+   them on via View → Side Pane / Bottom Pane (or `Ctrl+B` / `Ctrl+E` / `Ctrl+J`).
+3. **C# completions missing.** Make sure the dotnet SDK and
+   `roslyn-language-server` are installed (see above). The C# Output
+   panel at the bottom shows what the language server is doing.
+
+If you report a problem, run with debug and include traces:
+`THOR_DEBUG=1 thor` (`[thor:*]`). Marker log: `/tmp/thor-csharp-$(id -u).log`,
+server stderr: `~/.cache/thor/.../roslyn-logs/roslyn-stderr.log`.
+
+## For developers
+
+The test suite runs under `pytest` — `pytest-xvfb` auto-creates a virtual display:
+
+```bash
+python3 -m pytest -q
+```
+
+Thor headless modules (`thor/csharp/*`, `thor/project`, etc.) import without a display.

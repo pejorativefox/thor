@@ -1,0 +1,288 @@
+"""Minimal LSP-over-stdio transport.
+
+Speaks Content-Length framed JSON-RPC (LSP base protocol) on a reader thread
+and exposes a thread-safe send path. No GTK dependency so it is unit-testable.
+
+Only stdlib is used here; the GTK-facing Roslyn manager lives in roslyn.py.
+"""
+from __future__ import annotations
+
+import collections
+import json
+import logging
+import subprocess
+import threading
+from typing import Callable, Deque, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+MessageHandler = Callable[[dict], None]
+ExitHandler = Callable[[Optional[int]], None]
+
+_STDERR_TAIL_LINES = 30
+
+
+def encode_message(payload: dict) -> bytes:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+    return header + body
+
+
+def decode_messages(buffer: bytearray) -> List[dict]:
+    """Pop complete LSP messages off a byte buffer. Mutates buffer in place."""
+    messages: List[dict] = []
+    while True:
+        sep = buffer.find(b"\r\n\r\n")
+        if sep == -1:
+            return messages
+        header = buffer[:sep].decode("ascii", "replace")
+        length: Optional[int] = None
+        for line in header.split("\r\n"):
+            if line.lower().startswith("content-length:"):
+                try:
+                    length = int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    length = None
+        if length is None:
+            # Corrupt framing; drop the header and continue.
+            del buffer[: sep + 4]
+            continue
+        start = sep + 4
+        if len(buffer) < start + length:
+            return messages
+        body = bytes(buffer[start: start + length])
+        del buffer[: start + length]
+        try:
+            messages.append(json.loads(body.decode("utf-8")))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.debug(f"decode_messages: dropping bad body: {e!r}")
+            continue
+
+
+class LspTransport:
+    """Owns a child LSP server process and pumps its stdout on a thread.
+
+    Server stderr is drained on a second thread into an optional log file
+    (plus an in-memory tail) so startup crashes are diagnosable instead of
+    vanishing into an unread pipe. When the process exits, `on_exit` fires
+    with its return code.
+    """
+
+    def __init__(
+        self,
+        argv: List[str],
+        on_message: MessageHandler,
+        on_exit: Optional[ExitHandler] = None,
+        stderr_log_path: Optional[str] = None,
+    ) -> None:
+        self.argv = argv
+        self.on_message = on_message
+        self._on_exit = on_exit
+        self._stderr_log_path = stderr_log_path
+        self._proc: Optional[subprocess.Popen] = None
+        self._reader: Optional[threading.Thread] = None
+        self._stderr_thread: Optional[threading.Thread] = None
+        self._write_lock = threading.Lock()
+        self._next_id = 1
+        self._id_lock = threading.Lock()
+        self._stderr_tail: Deque[str] = collections.deque(maxlen=_STDERR_TAIL_LINES)
+        self._stderr_head: List[str] = []
+        self._tail_lock = threading.Lock()
+        self._send_broken = False
+        self.returncode: Optional[int] = None
+        self.running = False
+
+    def next_id(self) -> int:
+        with self._id_lock:
+            current = self._next_id
+            self._next_id += 1
+            return current
+
+    def start(self) -> None:
+        logger.debug(f"LspTransport start: {' '.join(self.argv)}")
+        self._proc = subprocess.Popen(
+            self.argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+        self.running = True
+        self._reader = threading.Thread(
+            target=self._read_loop, name="thor-csharp-lsp-reader", daemon=True
+        )
+        self._reader.start()
+        self._stderr_thread = threading.Thread(
+            target=self._stderr_loop, name="thor-csharp-lsp-stderr", daemon=True
+        )
+        self._stderr_thread.start()
+
+    def stderr_tail(self) -> List[str]:
+        with self._tail_lock:
+            return list(self._stderr_tail)
+
+    def stderr_head(self) -> List[str]:
+        with self._tail_lock:
+            return list(self._stderr_head)
+
+    def stop(self) -> None:
+        self.running = False
+        # Intentional stop is not a crash: suppress the exit callback.
+        self._on_exit = None
+        proc, self._proc = self._proc, None
+        if proc is not None:
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=3)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    def send(self, payload: dict) -> None:
+        proc = self._proc
+        if proc is None or proc.stdin is None or proc.stdin.closed:
+            logger.debug("LspTransport.send: no process, dropping message")
+            return
+        data = encode_message(payload)
+        with self._write_lock:
+            try:
+                proc.stdin.write(data)
+                proc.stdin.flush()
+            except (BrokenPipeError, OSError) as e:
+                if not self._send_broken:
+                    self._send_broken = True
+                    logger.debug(f"LspTransport.send failed (further send errors suppressed): {e!r}")
+                self.running = False
+
+    def send_request(self, method: str, params: dict) -> int:
+        request_id = self.next_id()
+        self.send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        return request_id
+
+    def send_notification(self, method: str, params: dict) -> None:
+        self.send({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def _read_loop(self) -> None:
+        assert self._proc is not None and self._proc.stdout is not None
+        buf = bytearray()
+        while self.running:
+            try:
+                chunk = self._proc.stdout.read(4096)
+            except Exception as e:
+                logger.debug(f"LspTransport read error: {e!r}")
+                break
+            if not chunk:
+                logger.debug("LspTransport: server closed stdout")
+                break
+            buf.extend(chunk)
+            for message in decode_messages(buf):
+                try:
+                    self.on_message(message)
+                except Exception as e:
+                    logger.debug(f"on_message handler failed: {e!r}")
+        self._finish()
+
+    def _stderr_loop(self) -> None:
+        """Drain stderr so the child never blocks on a full pipe; keep a tail."""
+        proc = self._proc
+        stream = proc.stderr if proc is not None else None
+        if stream is None:
+            return
+        log_file = None
+        if self._stderr_log_path:
+            try:
+                log_file = open(self._stderr_log_path, "a", encoding="utf-8", errors="replace")
+            except OSError as e:
+                logger.debug(f"LspTransport: cannot open stderr log: {e!r}")
+        pending = ""
+        try:
+            while True:
+                try:
+                    chunk = stream.read(4096)
+                except Exception:
+                    break
+                if not chunk:
+                    break
+                if isinstance(chunk, bytes):
+                    text = chunk.decode("utf-8", "replace")
+                else:
+                    text = chunk
+                if log_file is not None:
+                    try:
+                        log_file.write(text)
+                        log_file.flush()
+                    except Exception:
+                        pass
+                pending += text
+                *lines, pending = pending.split("\n")
+                if lines:
+                    with self._tail_lock:
+                        self._stderr_tail.extend(line[:500] for line in lines)
+                        for line in lines:
+                            if len(self._stderr_head) >= 5:
+                                break
+                            if line.strip():
+                                self._stderr_head.append(line.strip()[:500])
+        finally:
+            if pending.strip():
+                with self._tail_lock:
+                    self._stderr_tail.append(pending.strip()[:500])
+                    if len(self._stderr_head) < 5:
+                        self._stderr_head.append(pending.strip()[:500])
+            if log_file is not None:
+                try:
+                    log_file.close()
+                except Exception:
+                    pass
+
+    def _finish(self) -> None:
+        """Reap the child exactly once and report its exit code."""
+        self.running = False
+        proc = self._proc
+        returncode: Optional[int] = None
+        if proc is not None:
+            try:
+                returncode = proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                    returncode = proc.wait(timeout=5)
+                except Exception:
+                    returncode = proc.poll()
+        self.returncode = returncode
+        logger.debug(f"LspTransport: server exited with code {returncode}")
+        callback, self._on_exit = self._on_exit, None
+        if callback is not None:
+            try:
+                callback(returncode)
+            except Exception as e:
+                logger.debug(f"on_exit handler failed: {e!r}")
+
+class PendingRequests:
+    """Maps request id -> callback for responses arriving on the reader thread."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._callbacks: Dict[int, MessageHandler] = {}
+
+    def add(self, request_id: int, callback: MessageHandler) -> None:
+        with self._lock:
+            self._callbacks[request_id] = callback
+
+    def pop(self, request_id: int) -> Optional[MessageHandler]:
+        with self._lock:
+            return self._callbacks.pop(request_id, None)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._callbacks.clear()
