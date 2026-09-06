@@ -27,13 +27,11 @@ def find_all(
     (e.g. ``İ`` → ``i̇``, ``ß`` → ``ss``), which skews offsets when the
     search runs on the lowered copy.
     """
-    if not query:
+    if not isinstance(text, str) or not isinstance(query, str) or not query:
         return []
     if case_sensitive:
         hits: list[tuple[int, int]] = []
         qlen = len(query)
-        if qlen == 0:
-            return []
         start = 0
         while True:
             idx = text.find(query, start)

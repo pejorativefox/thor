@@ -52,6 +52,13 @@ if Gtk is not None:
         # -- ThorPanel API --
 
         def add_item(self, widget: Gtk.Widget, name: str, icon_name: str) -> None:  # type: ignore[override]
+            # Reorder-safe: adding the same widget twice just activates it
+            n = self._notebook.get_n_pages()
+            for i in range(n):
+                if self._notebook.get_nth_page(i) is widget:
+                    self._notebook.set_current_page(i)
+                    self._sync_visibility()
+                    return
             # Wrap widget in a labeled tab
             label = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
             try:
@@ -123,22 +130,48 @@ else:
 
     class ThorPanel:  # type: ignore[no-redef]
         def __init__(self, *a, **kw):
-            pass
+            self._items: list = []
+            self._active = None
+            self._target_visible = True
 
-        def add_item(self, *a, **kw):
+        def add_item(self, widget, *a, **kw):
+            if widget not in self._items:
+                self._items.append(widget)
+                if self._active is None:
+                    self._active = widget
+            else:
+                self._active = widget
             return None
 
-        def remove_item(self, *a, **kw):
+        def remove_item(self, widget, *a, **kw):
+            try:
+                self._items.remove(widget)
+            except ValueError:
+                return False
+            if self._active is widget:
+                self._active = self._items[0] if self._items else None
+            return True
+
+        def activate_item(self, widget, *a, **kw):
+            if widget in self._items:
+                self._active = widget
+                return True
             return False
 
-        def activate_item(self, *a, **kw):
-            return False
-
-        def item_is_active(self, *a, **kw):
-            return False
+        def item_is_active(self, widget, *a, **kw):
+            return bool(self._items) and self._active is widget
 
         def get_n_items(self):
-            return 0
+            return len(self._items)
+
+        def get_n_pages(self):
+            return len(self._items)
+
+        def set_target_visible(self, visible):
+            self._target_visible = bool(visible)
+
+        def get_target_visible(self):
+            return bool(getattr(self, "_target_visible", True))
 
         def get_orientation(self):
             return 0

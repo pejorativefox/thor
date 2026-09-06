@@ -190,45 +190,51 @@ if Gtk is not None:
             self._select_row(0)
 
         def _select_row(self, index: int) -> None:
-            if len(self._store) == 0:
+            if getattr(self, "_destroyed", False):
                 return
-            index = max(0, min(len(self._store) - 1, index))
-            path = Gtk.TreePath.new_from_indices([index])
-            self._view.get_selection().select_path(path)
-            self._view.scroll_to_cell(path, None, False, 0, 0)
+            try:
+                if len(self._store) == 0:
+                    return
+                index = max(0, min(len(self._store) - 1, index))
+                path = Gtk.TreePath.new_from_indices([index])
+                self._view.get_selection().select_path(path)
+                self._view.scroll_to_cell(path, None, False, 0, 0)
+            except Exception:
+                return
 
         def _selected_label(self) -> str | None:
-            model, tree_iter = self._view.get_selection().get_selected()
+            if getattr(self, "_destroyed", False):
+                return None
+            try:
+                model, tree_iter = self._view.get_selection().get_selected()
+            except Exception:
+                return None
             if tree_iter is None:
-                if len(self._store) == 0:
+                try:
+                    if len(self._store) == 0:
+                        return None
+                    tree_iter = self._store.get_iter_first()
+                except Exception:
                     return None
-                tree_iter = self._store.get_iter_first()
             try:
                 return model.get_value(tree_iter, COL_LABEL)
             except Exception:
                 return None
 
-        def _activate_selected(self) -> None:
-            label = self._selected_label()
-            if not label:
-                return
-            for cmd in self._commands:
-                if cmd["label"] == label:
-                    self.emit("activate-command", label)
-                    return
-
-        __gsignals__ = {
-            "activate-command": (GObject.SignalFlags.RUN_LAST, None, (GObject.TYPE_STRING,)),
-        }
-
         def _current_index(self) -> int:
-            _model, tree_iter = self._view.get_selection().get_selected()
+            if getattr(self, "_destroyed", False):
+                return 0
+            try:
+                _model, tree_iter = self._view.get_selection().get_selected()
+            except Exception:
+                return 0
             if tree_iter is not None:
                 try:
                     return self._store.get_path(tree_iter).get_indices()[0]
                 except Exception:
                     pass
             return 0
+
 
         def _on_entry_key(self, _entry, event) -> bool:
             try:

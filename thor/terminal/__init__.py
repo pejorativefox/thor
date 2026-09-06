@@ -633,10 +633,21 @@ if Gtk is not None:
         def _close_page(self, page: int) -> None:
             if self.notebook is None:
                 return
+            # Tab-close race: a double close-click or a child-exited event
+            # racing a manual close can hand us a stale index or a dead
+            # widget. Bail out instead of killing an unrelated pid.
+            try:
+                pages = self.notebook.get_n_pages()
+            except Exception:
+                return
+            if page < 0 or page >= pages:
+                return
             try:
                 term = self.notebook.get_nth_page(page)
             except Exception as e:
                 logger.debug("close page lookup failed: %r", e, exc_info=True)
+                return
+            if term is None:
                 return
             # Ensure the child dies with the tab: SIGTERM the tracked pid,
             # then ask the pty to exit, then drop the widget.

@@ -22,7 +22,7 @@ def word_at(text: str, offset: int) -> tuple[str, int, int] | None:
     when the char under the cursor is not a word char or the word is
     shorter than ``MIN_WORD_LEN``.
     """
-    if not text:
+    if not isinstance(text, str) or not text:
         return None
     try:
         offset = int(offset)
@@ -54,6 +54,8 @@ def find_occurrences(
     Returns ``[]`` for ``""`` or words shorter than ``MIN_WORD_LEN``.
     Stops once ``len(hits) == limit``; beyond-cap matches are omitted.
     """
+    if not isinstance(text, str) or not isinstance(word, str):
+        return []
     if not word or len(word) < MIN_WORD_LEN:
         return []
     if limit <= 0:

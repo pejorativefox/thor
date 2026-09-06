@@ -107,6 +107,12 @@ def ensure_dir(path: str) -> str:
             os.makedirs(path, exist_ok=True)
         except OSError:
             logger.debug("ensure_dir failed for %s", path, exc_info=True)
+        else:
+            try:
+                if not os.path.isdir(path):
+                    logger.debug("ensure_dir: %s is not a directory", path)
+            except Exception:
+                logger.debug("ensure_dir check failed for %s", path, exc_info=True)
     return path
 
 

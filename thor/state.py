@@ -7,7 +7,14 @@ import json
 import logging
 import os
 import tempfile
-import tomllib
+
+try:
+    import tomllib
+except ImportError:  # Python 3.10: no stdlib tomllib
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ImportError:
+        tomllib = None  # type: ignore[assignment]
 
 from . import xdg
 
@@ -47,6 +54,8 @@ def _coerce(state: dict, saved: dict) -> dict:
         elif isinstance(default_val, int):
             if isinstance(val, bool):
                 continue
+            if isinstance(val, float) and not val.is_integer():
+                continue
             try:
                 state[k] = int(val)
             except (TypeError, ValueError):
@@ -54,6 +63,8 @@ def _coerce(state: dict, saved: dict) -> dict:
         elif default_val is None:
             if val is None:
                 state[k] = None
+            elif isinstance(val, bool):
+                pass  # no bool<->None mixing; keep default
             else:
                 try:
                     state[k] = int(val)
@@ -81,6 +92,50 @@ def _encode(state: dict) -> str:
             logger.debug("state encode: skipping non-scalar %r", k)
     return "\n".join(lines) + "\n"
 
+def _fallback_parse(data: bytes) -> dict:
+    """Minimal flat `key = value` parser for our schema (no TOML lib)."""
+    saved: dict = {}
+    try:
+        text = data.decode("utf-8", errors="replace")
+    except Exception:
+        return saved
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k, v = k.strip(), v.strip()
+        if k not in DEFAULT_STATE or not v:
+            continue
+        if v == "true":
+            saved[k] = True
+        elif v == "false":
+            saved[k] = False
+        elif v.startswith('"'):
+            try:
+                saved[k] = json.loads(v)
+            except ValueError:
+                continue
+        else:
+            try:
+                saved[k] = int(v, 10)
+            except ValueError:
+                continue
+    return saved
+
+
+def _toml_loads(data: bytes) -> dict:
+    if tomllib is not None:
+        try:
+            import io
+
+            saved = tomllib.load(io.BytesIO(data))
+        except Exception:
+            logger.debug("state TOML decode failed; using defaults", exc_info=True)
+            return {}
+        return saved if isinstance(saved, dict) else {}
+    return _fallback_parse(data)
+
 
 def load_state(path: str | None = None) -> dict:
     """Load saved window/panel state from XDG config, falling back to defaults."""
@@ -89,9 +144,11 @@ def load_state(path: str | None = None) -> dict:
     try:
         if os.path.isfile(state_path):
             with open(state_path, "rb") as f:
-                saved = tomllib.load(f)
-            if isinstance(saved, dict):
+                data = f.read()
+            saved = _toml_loads(data)
+            if saved:
                 return _coerce(state, saved)
+            return state
         elif path is None:
             # One-time migration from the legacy JSON file.
             legacy = _legacy_path()
@@ -123,6 +180,17 @@ def save_state(state: dict, path: str | None = None) -> None:
             os.fsync(f.fileno())
         os.replace(tmp, state_path)
         tmp = None
+        try:
+            dir_fd = os.open(os.path.dirname(state_path) or ".", os.O_RDONLY)
+        except OSError:
+            dir_fd = None
+        if dir_fd is not None:
+            try:
+                os.fsync(dir_fd)
+            except OSError:
+                logger.debug("save_state: dir fsync failed", exc_info=True)
+            finally:
+                os.close(dir_fd)
     except Exception as e:
         logger.debug("save_state failed: %r", e, exc_info=True)
     finally:

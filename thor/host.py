@@ -15,6 +15,7 @@ down the editor.
 
 from __future__ import annotations
 
+import importlib
 import logging
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,6 @@ except Exception:  # headless
 # ---------------------------------------------------------------------------
 # Public entry — called once per new ThorWindow after construction
 # ---------------------------------------------------------------------------
-
 def attach_builtin_plugins(window, initial_folder: str | None = None) -> None:
     """Wire all built-in Thor features to *window*."""
     if window is None:
@@ -40,8 +40,6 @@ def attach_builtin_plugins(window, initial_folder: str | None = None) -> None:
 
     # Order matters a bit: side panel first, then bottom, then key handlers.
     # Each attach is soft — log and continue on failure.
-    import importlib
-
     _features: list[tuple[str, str, dict]] = [
         ("project", "thor.project", {"initial_folder": initial_folder}),
         ("terminal", "thor.terminal", {}),
@@ -75,10 +73,8 @@ def attach_builtin_plugins(window, initial_folder: str | None = None) -> None:
     if hasattr(window, "focus_active_editor"):
         try:
             from gi.repository import GLib  # type: ignore
-            if GLib is not None:
-                GLib.idle_add(window.focus_active_editor)
-            else:
-                window.focus_active_editor()
+
+            GLib.idle_add(window.focus_active_editor)
         except Exception:
             try:
                 window.focus_active_editor()

@@ -39,6 +39,11 @@ DEBOUNCE_MS = 150
 MAX_MATCHES = 1000
 MIN_WORD_LEN = 2
 
+#: Buffers larger than this skip occurrence highlighting: a full-text
+#: snapshot plus whole-word scan on a multi-megabyte file stalls cursor
+#: movement for no benefit (applied matches cap at MAX_MATCHES anyway).
+MAX_TEXT_LEN = 500_000
+
 from .search import find_occurrences, word_at  # noqa: E402
 
 class OccurrencesManager:
@@ -310,6 +315,19 @@ class OccurrencesManager:
         except Exception as e:
             logger.debug("iter word pre-check failed: %r", e, exc_info=True)
             # fall through to the snapshot path
+        # Size guard: parsing/tagging a huge buffer on every cursor stop
+        # hitches the editor; gutter + highlight add nothing at that scale.
+        # get_char_count() avoids the snapshot itself when available.
+        try:
+            _count = doc.get_char_count()
+        except Exception:
+            _count = None
+        if _count is not None and _count > MAX_TEXT_LEN:
+            try:
+                self._clear_doc(doc, record)
+            except Exception:
+                pass
+            return
         try:
             start, end = doc.get_bounds()
             text = doc.get_text(start, end, True)
@@ -319,6 +337,12 @@ class OccurrencesManager:
             except Exception as e:
                 logger.debug(f"text snapshot failed: {e!r}")
                 return
+        if len(text) > MAX_TEXT_LEN:
+            try:
+                self._clear_doc(doc, record)
+            except Exception:
+                pass
+            return
         try:
             found = word_at(text, offset)
         except Exception as e:

@@ -54,6 +54,10 @@ def is_save_completed(previous, current) -> bool:
 
 def doc_path(doc) -> str | None:
     """Best-effort file path (or URI for remote) for a document, else None."""
+    if doc is None:
+        return None
+    if isinstance(doc, str):
+        return doc or None
     try:
         location = doc.get_location()
     except Exception:
@@ -61,12 +65,15 @@ def doc_path(doc) -> str | None:
         location = None
     if location is None:
         try:
-            location = doc.get_file().get_location()
+            maybe_file = doc.get_file()
+            location = maybe_file.get_location() if maybe_file is not None else None
         except Exception:
             logger.debug("doc_path: get_file location failed", exc_info=True)
             location = None
     if location is None:
         return None
+    if isinstance(location, str):
+        return location or None
     try:
         path = location.get_path()
     except Exception:

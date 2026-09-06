@@ -240,15 +240,20 @@ def _toggle_side_panel(window) -> None:
     _toggle_pane(window, "ViewSidePane", "side")
 
 def _handle_global_key(window, keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
-    if ctrl and not shift and not alt and keyname.lower() == "b":
+    # Owned keys only: Ctrl+B/J/E without shift/alt. Everything else —
+    # notably Ctrl+P (fuzzy), Ctrl+Shift+P (palette), Ctrl+, (keybinds),
+    # Ctrl+W (keybinds), Ctrl+Shift+T/W and Ctrl+` (terminal) — falls
+    # through (False) so the owning handler runs.
+    lowered = (keyname or "").lower()
+    if ctrl and not shift and not alt and lowered == "b":
         logger.debug("key: Ctrl+B toggle-panels (two-way)")
         _toggle_all_panels(window)
         return True
-    if ctrl and not shift and not alt and keyname.lower() == "j":
+    if ctrl and not shift and not alt and lowered == "j":
         logger.debug("key: Ctrl+J toggle-bottom-panel")
         _toggle_bottom_panel(window)
         return True
-    if ctrl and not shift and not alt and keyname.lower() == "e":
+    if ctrl and not shift and not alt and lowered == "e":
         logger.debug("key: Ctrl+E toggle-side-panel")
         _toggle_side_panel(window)
         return True

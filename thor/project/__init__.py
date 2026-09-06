@@ -596,6 +596,13 @@ if Gtk is not None:
             scrolled.add(self.tree)
             self.pack_start(scrolled, True, True, 0)
             self.show_all()
+            # Destroy-without-detach (window teardown) must still release
+            # monitors, timers and git procs; cleanup() is idempotent, so
+            # the detach() path calling it again is harmless.
+            try:
+                self.connect("destroy", lambda *_a: self.cleanup())
+            except Exception as e:
+                logger.debug(f"project destroy hook failed: {e!r}")
 
         def set_root(self, folder: str) -> None:
             self._git_generation += 1

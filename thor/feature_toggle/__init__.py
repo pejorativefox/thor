@@ -298,15 +298,21 @@ def attach(window, settings_path: str | None = None) -> bool:
                 _close_untouched_starter_doc(window)
             except Exception:
                 pass
-        for signal in ("active-tab-changed", "tab-added"):
-            try:
-                handler_id = window.connect(signal, lambda *_a, w=window: _hide_documents_panel(w))
+        # Idempotent: a second attach() must not stack duplicate handlers.
+        try:
+            already_wired = bool(getattr(window, "_thor_feature_toggle_signal_ids", None))
+        except Exception:
+            already_wired = False
+        if not already_wired:
+            for signal in ("active-tab-changed", "tab-added"):
                 try:
-                    window._thor_feature_toggle_signal_ids.append((window, handler_id))  # type: ignore[attr-defined]
-                except Exception:
-                    pass
-            except Exception as e:
-                logger.debug(f"connect {signal} failed: {e!r}")
+                    handler_id = window.connect(signal, lambda *_a, w=window: _hide_documents_panel(w))
+                    try:
+                        window._thor_feature_toggle_signal_ids.append((window, handler_id))  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.debug(f"connect {signal} failed: {e!r}")
         return True
     except Exception as e:
         logger.debug(f"attach failed: {e!r}")

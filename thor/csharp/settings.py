@@ -41,6 +41,7 @@ def _config_dir() -> str:
 
 class SettingsStore:
     def __init__(self, path: str | None = None) -> None:
+        self._data = dict(DEFAULTS)
         config_dir = _config_dir()
         try:
             os.makedirs(config_dir, exist_ok=True)

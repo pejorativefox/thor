@@ -27,6 +27,9 @@ try:
 except Exception:  # headless / import cycle
     _setup_thor_logging = None  # type: ignore
 
+    def _is_debug_env() -> bool:  # type: ignore[misc]
+        return os.environ.get("THOR_DEBUG", "").lower() in ("1", "true", "yes", "on")
+
 try:
     from thor.xdg import marker_log_path as _get_marker_path
     MARKER_PATH = _get_marker_path()

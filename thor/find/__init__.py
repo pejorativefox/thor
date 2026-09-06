@@ -35,7 +35,7 @@ except Exception:  # headless
     Gtk = Gdk = GLib = GtkSource = None  # type: ignore
     _GTKSOURCE_AVAILABLE = False
 
-from .search import find_all, next_index, prev_index
+from .search import current_index, find_all, next_index, prev_index
 
 TAG_MATCH = "thor-find-match"
 TAG_CURRENT = "thor-find-current"
@@ -497,24 +497,14 @@ class FindManager:
             return
         # decide current: if cursor inside a hit, keep it; else next after cursor
         off = _cursor_offset(doc)
-        # if select is True and we just showed bar, pick next after cursor (or first)
-        cur = None
-        # try to keep current if hits unchanged? simplest: next after cursor
-        nxt = next_index(hits, off - 1 if off > 0 else -1, wrap=True)
-        # if cursor already on a hit and we are not forcing select, try to keep it
         try:
-            # check if cursor inside any hit
-            for i, (s, e) in enumerate(hits):
-                if s <= off < e or s == off:
-                    # if this is the first update after typing, keep this hit as current
-                    # but if query just changed, better to go to first hit near cursor
-                    # we use this hit
-                    nxt = i
-                    break
+            keep = current_index(hits, off)
         except Exception:
-            pass
-        # if we are in incremental typing (no select flag from buffer change), keep prior current if still valid?
-        # For simplicity use nxt
+            keep = None
+        if keep is not None:
+            nxt = keep
+        else:
+            nxt = next_index(hits, off - 1 if off > 0 else -1, wrap=True)
         cur = nxt if nxt is not None else 0
         self._current = cur
         _apply_highlights(doc, hits, cur)

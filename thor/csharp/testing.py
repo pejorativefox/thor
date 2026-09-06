@@ -9,6 +9,10 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
+#: A pathological `dotnet test` dump must not grow UI lists without bound;
+#: beyond this the parsers keep counts but stop storing rows/names.
+MAX_TEST_NAMES = 10000
+MAX_TEST_CASES = 10000
 from . import dotnet_cli
 _LIST_TESTS_RE = re.compile(r"^\s*(?P<name>[\w\.\+\-`<>_]+)\s*$")
 _OUTCOME_RE = re.compile(
@@ -49,7 +53,8 @@ def parse_list_tests(text: str) -> List[str]:
             continue
         match = _LIST_TESTS_RE.match(line)
         if match and "." in match.group("name"):
-            names.append(match.group("name"))
+            if len(names) < MAX_TEST_NAMES:
+                names.append(match.group("name"))
     logger.debug(f"parse_list_tests: {len(names)} tests")
     return names
 
@@ -63,7 +68,8 @@ def parse_test_output(text: str, project: str = "") -> TestRun:
             outcome = match.group("outcome").rstrip("!")
             name = match.group("name").strip()
             duration = match.group("duration") or ""
-            run.cases.append(TestCase(name=name, outcome=outcome, duration=duration))
+            if len(run.cases) < MAX_TEST_CASES:
+                run.cases.append(TestCase(name=name, outcome=outcome, duration=duration))
     run.total = len(run.cases)
     run.passed = sum(1 for c in run.cases if c.outcome == "Passed")
     run.failed = sum(1 for c in run.cases if c.outcome == "Failed")

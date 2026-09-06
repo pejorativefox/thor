@@ -340,9 +340,12 @@ def parse_unified_diff(text: str) -> dict[str, list[int]]:
     except Exception:
         return {"added": added, "modified": modified, "deleted": deleted}
     for line in lines:
-        if not line.startswith("@@"):
-            continue
+        # Binary/rename headers, "\ No newline" markers, and anything
+        # non-str yield no hunks; per-line guard so one odd line cannot
+        # abort the whole parse.
         try:
+            if not line.startswith("@@"):
+                continue
             match = _HUNK_RE.match(line)
         except Exception:
             continue

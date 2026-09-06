@@ -36,7 +36,7 @@ def _split_location_arg(arg: str) -> tuple[str, int | None, int | None]:
             line = max(1, int(m.group(2)))
             col = max(1, int(m.group(3))) if m.group(3) else None
             return m.group(1).strip(), line, col
-        except Exception:
+        except (TypeError, ValueError):
             return arg, None, None
     m = re.match(r"^(.*?):(\d+)(?::(\d+))?\s*$", arg)
     if m:
@@ -52,7 +52,7 @@ def _split_location_arg(arg: str) -> tuple[str, int | None, int | None]:
                     line = max(1, int(m.group(2)))
                     col = max(1, int(m.group(3))) if m.group(3) else None
                     return cand, line, col
-                except Exception:
+                except (TypeError, ValueError):
                     pass
     return arg, None, None
 
@@ -85,7 +85,7 @@ def _resolve_initial_target_with_lines(
                     line = max(1, int(parts[0]))
                     col = max(1, int(parts[1])) if len(parts) > 1 and parts[1].isdigit() else None
                     pending_loc = (line, col)
-                except Exception:
+                except (TypeError, ValueError):
                     pending_loc = None
                 continue
         if a.startswith("-"):
@@ -137,6 +137,9 @@ if Gtk is not None:
             self._pending_files: list[str] = []
             self._pending_file_lines: dict[str, int] = {}
             self._pending_new_window: bool = False
+            # Windows whose panel state was already saved (window_removed vs
+            # shutdown both save; saving twice is redundant I/O).
+            self._saved_panel_windows: set[int] = set()
             # CLI option passthrough (best-effort; argv parsing doesn't depend on it)
             try:
                 self.add_main_option("new-window", ord("n"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Open in new window", None)  # type: ignore[attr-defined]
@@ -182,12 +185,21 @@ if Gtk is not None:
             except Exception:
                 logger.debug("set_accels failed", exc_info=True)
 
-        def do_window_removed(self, window: Gtk.Window) -> None:  # type: ignore[override]
+        def _save_panels_once(self, window) -> None:
             try:
+                key = id(window)
+                saved = getattr(self, "_saved_panel_windows", None)
+                if saved is not None:
+                    if key in saved:
+                        return
+                    saved.add(key)
                 if hasattr(window, "_save_panel_state"):
                     window._save_panel_state()
             except Exception:
                 pass
+
+        def do_window_removed(self, window: Gtk.Window) -> None:  # type: ignore[override]
+            self._save_panels_once(window)
             try:
                 Gtk.Application.do_window_removed(self, window)
             except Exception:
@@ -196,15 +208,13 @@ if Gtk is not None:
         def do_shutdown(self) -> None:  # type: ignore[override]
             try:
                 for win in self.get_windows():
-                    if hasattr(win, "_save_panel_state"):
-                        win._save_panel_state()
+                    self._save_panels_once(win)
             except Exception:
                 pass
             try:
                 Gtk.Application.do_shutdown(self)
             except Exception:
                 pass
-
         def do_activate(self) -> None:  # type: ignore[override]
             # Snapshot-then-clear: consume pending state up front so a
             # re-entrant activate (e.g. open while opening) can't double-open.
@@ -212,16 +222,17 @@ if Gtk is not None:
             pending_folder = getattr(self, "_pending_folder", None)
             pending_files = list(getattr(self, "_pending_files", None) or [])
             pending_lines = dict(getattr(self, "_pending_file_lines", None) or {})
-            try:
-                self._pending_new_window = False
-                self._pending_folder = None
-                self._pending_files = []
-                self._pending_file_lines = {}
-            except Exception:
-                logger.debug("do_activate: pending clear failed", exc_info=True)
+            self._pending_new_window = False
+            self._pending_folder = None
+            self._pending_files = []
+            self._pending_file_lines = {}
             win = self.get_active_window()
             if win is None or new_window:
-                win = self._create_window(pending_folder, pending_files, file_lines=pending_lines)
+                try:
+                    win = self._create_window(pending_folder, pending_files, file_lines=pending_lines)
+                except Exception:
+                    logger.exception("do_activate: create window failed")
+                    return
             else:
                 # Existing window: open pending files there (e.g. thor file:line while running)
                 for fp in pending_files:
@@ -243,6 +254,8 @@ if Gtk is not None:
                         win.create_tab(jump_to=True)
                 except Exception:
                     logger.debug("do_activate: empty notebook guard failed", exc_info=True)
+            if win is None:
+                return
             try:
                 win.present()
                 if GLib is not None and hasattr(win, "focus_active_editor"):
@@ -254,11 +267,14 @@ if Gtk is not None:
             # Gio.File[] from DBus open (e.g. thor file.cs). Non-existent
             # paths route to create=True; remote URIs (get_path() None)
             # open via the Gio.File directly.
+            # Consume all command-line pending state: with HANDLES_OPEN the
+            # files arrive here, so stale pendings must not leak into the
+            # next do_activate.
             new_window = bool(getattr(self, "_pending_new_window", False))
-            try:
-                self._pending_new_window = False
-            except Exception:
-                logger.debug("do_open: pending clear failed", exc_info=True)
+            self._pending_new_window = False
+            self._pending_folder = None
+            self._pending_files = []
+            self._pending_file_lines = {}
             folder = None
             file_paths: list[str] = []
             remote_files: list = []
@@ -282,7 +298,11 @@ if Gtk is not None:
                     remote_files.append(f)
             win = self.get_active_window()
             if win is None or new_window:
-                win = self._create_window(folder, file_paths)
+                try:
+                    win = self._create_window(folder, file_paths)
+                except Exception:
+                    logger.exception("do_open: create window failed")
+                    return
                 for f in remote_files:
                     try:
                         win.create_tab_from_location(f, create=True, jump_to=True)
@@ -312,6 +332,8 @@ if Gtk is not None:
                         win.create_tab_from_location(f, create=True, jump_to=True)
                     except Exception:
                         logger.debug("do_open: remote open failed", exc_info=True)
+            if win is None:
+                return
             try:
                 win.present()
                 if GLib is not None and hasattr(win, "focus_active_editor"):
@@ -349,7 +371,10 @@ if Gtk is not None:
             self._pending_folder = folder
             self._pending_files = files
             self._pending_file_lines = file_lines
-            self.activate()
+            try:
+                self.activate()
+            except Exception:
+                logger.exception("do_command_line: activate failed")
             try:
                 return 0
             finally:
@@ -358,9 +383,14 @@ if Gtk is not None:
                 except Exception:
                     logger.debug("do_command_line: set_exit_status failed", exc_info=True)
 
-        # -- helpers ---------------------------------------------------
         def _create_window(self, folder: str | None, files: list[str], file_lines: dict | None = None) -> ThorWindow:
-            win = ThorWindow(self, initial_folder=folder)
+            if ThorWindow is None:
+                raise RuntimeError("ThorWindow unavailable (headless import)")
+            try:
+                win = ThorWindow(self, initial_folder=folder)
+            except Exception:
+                logger.exception("_create_window: ThorWindow construction failed")
+                raise
             file_lines = file_lines or {}
             # Open requested files
             for fp in files:
@@ -392,8 +422,15 @@ if Gtk is not None:
             return win
 
         def _new_window(self) -> None:
-            w = self._create_window(None, [])
-            w.present()
+            try:
+                w = self._create_window(None, [])
+            except Exception:
+                logger.exception("_new_window: create window failed")
+                return
+            try:
+                w.present()
+            except Exception:
+                logger.debug("_new_window: present failed", exc_info=True)
 
         def _prompt_open_folder(self) -> None:
             win = self.get_active_window()
@@ -404,12 +441,28 @@ if Gtk is not None:
                     transient_for=win,
                     action=Gtk.FileChooserAction.SELECT_FOLDER,
                 )
-                dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
+                try:
+                    dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
+                except Exception:
+                    # STOCK_* gone in newer GTK: dialog is still usable.
+                    logger.debug("open folder dialog buttons failed", exc_info=True)
                 if dlg.run() == Gtk.ResponseType.OK:
-                    folder = dlg.get_filename()
+                    try:
+                        folder = dlg.get_filename()
+                    except Exception:
+                        logger.debug("open folder dialog filename failed", exc_info=True)
+                        folder = None
                     if folder and os.path.isdir(folder):
-                        w = self._create_window(folder, [])
-                        w.present()
+                        try:
+                            w = self._create_window(folder, [])
+                        except Exception:
+                            logger.exception("open folder: create window failed")
+                            w = None
+                        if w is not None:
+                            try:
+                                w.present()
+                            except Exception:
+                                logger.debug("open folder: present failed", exc_info=True)
             except Exception as e:
                 logger.warning("open folder dialog failed: %r", e)
             finally:
@@ -423,7 +476,7 @@ if Gtk is not None:
 
         def _prompt_open_file(self) -> None:
             win = self.get_active_window()
-            if not isinstance(win, ThorWindow):
+            if ThorWindow is None or not isinstance(win, ThorWindow):
                 return
             dlg = None
             try:
@@ -432,10 +485,20 @@ if Gtk is not None:
                     transient_for=win,
                     action=Gtk.FileChooserAction.OPEN,
                 )
-                dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
-                dlg.set_select_multiple(True)
+                try:
+                    dlg.add_buttons(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL, Gtk.STOCK_OPEN, Gtk.ResponseType.OK)
+                except Exception:
+                    logger.debug("open file dialog buttons failed", exc_info=True)
+                try:
+                    dlg.set_select_multiple(True)
+                except Exception:
+                    logger.debug("open file dialog multi-select failed", exc_info=True)
                 if dlg.run() == Gtk.ResponseType.OK:
-                    files = dlg.get_filenames()
+                    try:
+                        files = dlg.get_filenames() or []
+                    except Exception:
+                        logger.debug("open file dialog filenames failed", exc_info=True)
+                        files = []
                     for fp in files:
                         try:
                             loc = Gio.File.new_for_path(fp)
@@ -455,6 +518,7 @@ if Gtk is not None:
 
         def _show_about(self) -> None:
             win = self.get_active_window()
+            dlg = None
             try:
                 from . import __version__
 
@@ -465,9 +529,14 @@ if Gtk is not None:
                 dlg.set_website("https://github.com/thor-editor/thor")
                 dlg.set_license_type(Gtk.License.MIT_X11)
                 dlg.run()
-                dlg.destroy()
             except Exception:
                 logger.debug("about dialog failed", exc_info=True)
+            finally:
+                if dlg is not None:
+                    try:
+                        dlg.destroy()
+                    except Exception:
+                        logger.debug("about dialog destroy failed", exc_info=True)
 
 else:
 

@@ -45,5 +45,5 @@ markers = [
 xfail_strict = false
 
 [tool.setuptools]
- packages = ["thor", "thor.csharp", "thor.project", "thor.terminal", "thor.fuzzy", "thor.find", "thor.gitdiff", "thor.occurrences", "thor.panel_hider", "thor.keybinds", "thor.autoreload", "thor.feature_toggle"]
+ packages = ["thor", "thor.csharp", "thor.project", "thor.terminal", "thor.fuzzy", "thor.find", "thor.gitdiff", "thor.occurrences", "thor.panel_hider", "thor.keybinds", "thor.autoreload", "thor.feature_toggle", "thor.palette"]
  # styles/ and lang/ are installed via ./install.sh to XDG dirs, not via pip.

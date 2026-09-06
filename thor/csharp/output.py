@@ -11,6 +11,11 @@ logger = logging.getLogger(__name__)
 # The path column is hidden (no TreeViewColumn) but used for jump-to.
 (PROB_SEV, PROB_FILE, PROB_LINE, PROB_MSG, PROB_PATH) = range(5)
 
+#: Output page cap: long builds must not grow the TextBuffer without bound.
+#: When exceeded, the oldest chunk is dropped (counts tracked, not scanned).
+_MAX_OUTPUT_CHARS = 200000
+_OUTPUT_TRIM_CHARS = 50000
+
 try:
     import gi
 
@@ -48,6 +53,12 @@ else:
 
         def __init__(self) -> None:
             super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            self._destroyed = False
+            self._chars = 0
+            try:
+                self.connect("destroy", self._on_destroy)
+            except Exception as e:
+                logger.debug(f"OutputView destroy hook failed: {e!r}")
             toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             self.status_label = Gtk.Label(label="Ready")
             self.status_label.set_xalign(0.0)
@@ -89,39 +100,90 @@ else:
             self.notebook.append_page(prob_scrolled, Gtk.Label(label="Problems"))
             self.show_all()
 
+        def _on_destroy(self, _widget) -> None:
+            """Late idle callbacks after deactivate must no-op, not touch dead widgets."""
+            self._destroyed = True
+
         def _append(self, text: str) -> None:
-            buf = self.textview.get_buffer()
+            if self._destroyed:
+                return
+            try:
+                buf = self.textview.get_buffer()
+            except Exception:
+                return
             end = buf.get_end_iter()
             buf.insert(end, text)
+            self._chars += len(text)
+            if self._chars > _MAX_OUTPUT_CHARS:
+                try:
+                    buf.delete(buf.get_start_iter(), buf.get_iter_at_offset(_OUTPUT_TRIM_CHARS))
+                    self._chars -= _OUTPUT_TRIM_CHARS
+                except Exception:
+                    logger.debug("OutputView trim failed", exc_info=True)
             mark = buf.create_mark(None, buf.get_end_iter(), False)
             try:
                 self.textview.scroll_to_mark(mark, 0.0, True, 0.0, 1.0)
             except Exception:
                 logger.debug("OutputView scroll failed", exc_info=True)
+            finally:
+                try:
+                    buf.delete_mark(mark)
+                except Exception:
+                    pass
 
         def append(self, text: str) -> None:
+            if self._destroyed:
+                return
             GLib.idle_add(self._append, text)
 
         def clear(self) -> None:
+            if self._destroyed:
+                return
+            self._chars = 0
             self.textview.get_buffer().set_text("")
 
         def set_status(self, text: str) -> None:
+            if self._destroyed:
+                return
             logger.debug(f"status: {text}")
-            GLib.idle_add(self.status_label.set_text, text)
+            GLib.idle_add(self._safe_set_status, text)
+
+        def _safe_set_status(self, text: str) -> bool:
+            if not self._destroyed:
+                try:
+                    self.status_label.set_text(text)
+                except Exception:
+                    logger.debug("OutputView status failed", exc_info=True)
+            return False
 
         # -- problems ----------------------------------------------------
         def set_problems(self, rows: list[tuple[str, str, int, str, str]]) -> None:
             """Replace the Problems list. Rows: (severity, file, line1, message, path)."""
+            if self._destroyed:
+                return
 
-            def _apply() -> None:
+            def _apply() -> bool:
+                if self._destroyed:
+                    return False
                 self.problem_store.clear()
                 for row in rows:
                     self.problem_store.append(list(row))
+                return False
 
             GLib.idle_add(_apply)
 
         def show_problems(self) -> None:
-            GLib.idle_add(self.notebook.set_current_page, 1)
+            if self._destroyed:
+                return
+            GLib.idle_add(self._safe_show_problems)
+
+        def _safe_show_problems(self) -> bool:
+            if not self._destroyed:
+                try:
+                    self.notebook.set_current_page(1)
+                except Exception:
+                    logger.debug("OutputView show problems failed", exc_info=True)
+            return False
 
         def _on_problem_activated(self, _tree, path, _col) -> None:
             try:

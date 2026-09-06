@@ -12,7 +12,8 @@ import json
 import logging
 import subprocess
 import threading
-from typing import Callable, Deque, Dict, List, Optional
+import time
+from typing import Callable, Deque, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,13 @@ MessageHandler = Callable[[dict], None]
 ExitHandler = Callable[[Optional[int]], None]
 
 _STDERR_TAIL_LINES = 30
+#: Cap for one newline-less stderr chunk: a server spewing binary/progress
+#: without newlines must not grow the partial-line buffer without bound.
+_STDERR_PARTIAL_CAP = 1 << 16
+
+#: A request unanswered this long is dead: drop it on the next response so
+#: a wedged server cannot leak callbacks or answer into a rewritten buffer.
+_REQUEST_TTL_S = 120.0
 
 
 def encode_message(payload: dict) -> bytes:
@@ -191,21 +199,25 @@ class LspTransport:
             except Exception:
                 logger.debug("LspTransport: thread join failed", exc_info=True)
 
-    def send(self, payload: dict) -> None:
+    def send(self, payload: dict) -> bool:
+        """Frame + write one message. False when there is no live server."""
         proc = self._proc
         if proc is None or proc.stdin is None or proc.stdin.closed:
             logger.debug("LspTransport.send: no process, dropping message")
-            return
+            return False
         data = encode_message(payload)
         with self._write_lock:
             try:
                 proc.stdin.write(data)
                 proc.stdin.flush()
-            except (BrokenPipeError, OSError) as e:
+            except (BrokenPipeError, OSError, ValueError) as e:
+                # ValueError: stop() closed the pipe mid-write (same as broken).
                 if not self._send_broken:
                     self._send_broken = True
                     logger.debug(f"LspTransport.send failed (further send errors suppressed): {e!r}")
                 self.running = False
+                return False
+        return True
 
     def send_request(self, method: str, params: dict) -> int:
         request_id = self.next_id()
@@ -268,6 +280,8 @@ class LspTransport:
                     except Exception:
                         logger.debug("LspTransport: stderr log write failed", exc_info=True)
                 pending += text
+                if len(pending) > _STDERR_PARTIAL_CAP:
+                    pending = pending[-_STDERR_PARTIAL_CAP:]
                 *lines, pending = pending.split("\n")
                 if lines:
                     with self._tail_lock:
@@ -325,20 +339,38 @@ class LspTransport:
 
 
 class PendingRequests:
-    """Maps request id -> callback for responses arriving on the reader thread."""
+    """Maps request id -> callback for responses arriving on the reader thread.
+
+    Entries stamp their send time; responses sweep anything older than
+    ``_REQUEST_TTL_S`` so a server that never answers cannot leak callbacks
+    (or deliver them minutes later to a rewritten buffer).
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._callbacks: Dict[int, MessageHandler] = {}
+        self._callbacks: Dict[int, Tuple[MessageHandler, float]] = {}
 
     def add(self, request_id: int, callback: MessageHandler) -> None:
         with self._lock:
-            self._callbacks[request_id] = callback
+            self._callbacks[request_id] = (callback, time.monotonic())
 
     def pop(self, request_id: int) -> Optional[MessageHandler]:
         with self._lock:
-            return self._callbacks.pop(request_id, None)
+            self._sweep_locked()
+            entry = self._callbacks.pop(request_id, None)
+            return entry[0] if entry is not None else None
 
     def clear(self) -> None:
         with self._lock:
             self._callbacks.clear()
+
+    def _sweep_locked(self) -> None:
+        now = time.monotonic()
+        stale = [
+            key for key, (_, sent) in self._callbacks.items()
+            if now - sent > _REQUEST_TTL_S
+        ]
+        for key in stale:
+            self._callbacks.pop(key, None)
+        if stale:
+            logger.debug(f"PendingRequests: expired {len(stale)} unanswered request(s)")

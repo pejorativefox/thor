@@ -194,6 +194,10 @@ def run_streaming(
                 pass
             rc = proc.wait()
         logger.debug(f"run_streaming done rc={rc}: {' '.join(argv)}")
+        try:
+            on_done(rc)
+        except Exception:
+            logger.debug("run_streaming on_done failed", exc_info=True)
 
     thread = threading.Thread(target=_worker, name="thor-csharp-dotnet", daemon=True)
     handle.thread = thread

@@ -39,7 +39,6 @@ def resolve_server_command(configured: str) -> Optional[List[str]]:
     if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
         return [candidate]
     if os.path.sep not in configured:
-        found = dotnet_cli.resolve_dotnet("dotnet")
         import shutil
 
         which = shutil.which(configured)
@@ -389,5 +388,9 @@ class RoslynManager:
                 return None
         request_id = transport.next_id()
         self.pending.add(request_id, callback)
-        transport.send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
+        if not transport.send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}):
+            # Dead pipe: never leave the callback pending with no answer coming.
+            self.pending.pop(request_id)
+            logger.debug(f"RoslynManager.request {method}: send failed, server gone")
+            return None
         return request_id

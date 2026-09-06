@@ -11,6 +11,10 @@ import os
 
 logger = logging.getLogger(__name__)
 
+#: Pending hover tooltips are pruned on delivery, but a server that never
+#: answers would grow the dict with every mouse move — evict the oldest.
+_MAX_PENDING_TOOLTIPS = 16
+
 try:
     import gi
 
@@ -464,6 +468,8 @@ else:
             seq = self._tooltip_seq
             self._last_hover_seq = seq
             self._pending_tooltips[seq] = tooltip
+            while len(self._pending_tooltips) > _MAX_PENDING_TOOLTIPS:
+                self._pending_tooltips.pop(min(self._pending_tooltips))
             try:
                 tooltip.set_text("Loading…")
             except Exception as e:

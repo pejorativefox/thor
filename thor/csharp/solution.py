@@ -21,6 +21,10 @@ from . import dotnet_cli
 
 logger = logging.getLogger(__name__)
 
+#: .csproj files are small XML; anything this big is generated or corrupt —
+#: skip the parse rather than stalling refresh on a huge solution.
+_CSPROJ_MAX_BYTES = 1 << 20
+
 
 @dataclass
 class ProjectInfo:
@@ -219,6 +223,12 @@ def parse_sln_list_output(text: str, solution_dir: str) -> List[str]:
 def parse_csproj(path: str) -> ProjectInfo:
     name = os.path.splitext(os.path.basename(path))[0]
     info = ProjectInfo(path=path, name=name)
+    try:
+        if os.path.getsize(path) > _CSPROJ_MAX_BYTES:
+            logger.debug(f"parse_csproj skipping huge file: {path}")
+            return info
+    except OSError:
+        pass
     try:
         tree = ET.parse(path)
         root = tree.getroot()

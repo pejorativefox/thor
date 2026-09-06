@@ -76,7 +76,7 @@ if GtkSource is not None:
             return self._thor_location is None
 
         def is_untouched(self) -> bool:
-            return self._thor_untouched
+            return bool(getattr(self, "_thor_untouched", True))
 
         def is_local(self) -> bool:
             loc = self._thor_location
@@ -405,18 +405,21 @@ if GtkSource is not None and Gtk is not None:
                 v.set_buffer(buf)
             except Exception:
                 logger.debug("new_with_buffer: set_buffer failed", exc_info=True)
-            # sane defaults
-            try:
-                v.set_show_line_numbers(True)
-                v.set_highlight_current_line(True)
-                v.set_auto_indent(True)
-                v.set_indent_on_tab(True)
-                v.set_tab_width(4)
-                v.set_insert_spaces_instead_of_tabs(True)
-                v.set_show_right_margin(False)
-                v.set_monospace(True)
-            except Exception:
-                logger.debug("new_with_buffer: defaults failed", exc_info=True)
+            # sane defaults — isolated so one failing setter keeps the rest
+            for _name, _arg in (
+                ("set_show_line_numbers", True),
+                ("set_highlight_current_line", True),
+                ("set_auto_indent", True),
+                ("set_indent_on_tab", True),
+                ("set_tab_width", 4),
+                ("set_insert_spaces_instead_of_tabs", True),
+                ("set_show_right_margin", False),
+                ("set_monospace", True),
+            ):
+                try:
+                    getattr(v, _name)(_arg)
+                except Exception:
+                    logger.debug("new_with_buffer: default %s failed", _name, exc_info=True)
             return v
 
 else:
@@ -551,10 +554,14 @@ if Gtk is not None and GtkSource is not None:
                 # Load bytes synchronously
                 try:
                     ok, contents, etag = location.load_contents(None)  # type: ignore[attr-defined]
-                    text = contents.decode("utf-8", errors="replace") if ok else ""
-                    if len(contents) > _MAX_LOAD_BYTES:
-                        logger.warning("load_location: truncating %r to 20MB", location)
-                        text = contents[:_MAX_LOAD_BYTES].decode("utf-8", errors="replace")
+                    if ok and contents is not None:
+                        if len(contents) > _MAX_LOAD_BYTES:
+                            logger.warning("load_location: truncating %r to 20MB", location)
+                            text = contents[:_MAX_LOAD_BYTES].decode("utf-8", errors="replace")
+                        else:
+                            text = contents.decode("utf-8", errors="replace")
+                    else:
+                        text = ""
                 except Exception:
                     logger.debug("load_location: load_contents failed, trying direct read", exc_info=True)
                     try:
@@ -643,12 +650,13 @@ else:
                                 size = None
                             if size is not None and size > _MAX_LOAD_BYTES:
                                 logger.warning("load_location: skipping %r (%d bytes > 20MB)", path, size)
-                                return
-                            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                                txt = f.read(_MAX_LOAD_BYTES + 1)
-                            if len(txt) > _MAX_LOAD_BYTES:
-                                logger.warning("load_location: truncating %r to 20MB", path)
-                                txt = txt[:_MAX_LOAD_BYTES]
+                                txt = ""
+                            else:
+                                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                                    txt = f.read(_MAX_LOAD_BYTES + 1)
+                                if len(txt) > _MAX_LOAD_BYTES:
+                                    logger.warning("load_location: truncating %r to 20MB", path)
+                                    txt = txt[:_MAX_LOAD_BYTES]
                             self._document.set_text(txt)  # type: ignore[union-attr]
                             try:
                                 self._document.set_modified(False)  # type: ignore[union-attr]

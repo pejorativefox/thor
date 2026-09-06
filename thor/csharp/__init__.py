@@ -1215,8 +1215,20 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             "triggerKind": trigger_kind,
             "triggerCharacter": trigger_char,
         }
-        self._pending_completion = {"path": path, "line": line, "char": char}
-        self.roslyn.request("textDocument/completion", params, self._on_completion_response)
+        pending = {"path": path, "line": line, "char": char}
+        self._pending_completion = pending
+
+        def _on_response(message: dict, _pending=pending) -> None:
+            # Two requests can be in flight while the user types: an older
+            # answer must not consume (or render into) a newer request's slot.
+            if self._pending_completion is not _pending:
+                logger.debug("fallback completion: dropped stale response")
+                return
+            self._on_completion_response(message)
+
+        if self.roslyn.request("textDocument/completion", params, _on_response) is None:
+            if self._pending_completion is pending:
+                self._pending_completion = None
 
     def _on_completion_response(self, message: dict) -> None:
         pending, self._pending_completion = self._pending_completion, None

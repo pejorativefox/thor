@@ -323,6 +323,8 @@ if Gtk is not None:
 
         # -- selection -------------------------------------------------
         def _select_row(self, index: int) -> None:
+            if getattr(self, "_destroyed", False):
+                return
             count = len(self._store)
             if count == 0:
                 return
@@ -332,6 +334,8 @@ if Gtk is not None:
             self._view.scroll_to_cell(path, None, False, 0, 0)
 
         def _selected_path(self) -> str | None:
+            if getattr(self, "_destroyed", False):
+                return None
             model, tree_iter = self._view.get_selection().get_selected()
             if tree_iter is None:
                 if len(self._store) == 0:
@@ -415,6 +419,7 @@ class _FuzzyFinderManager:
         self.window = window
         self._window_key_id = None
         self._file_cache: dict[str, list[str]] = {}
+        self._file_cache_mtime: dict[str, float] = {}
         self._recent: list[str] = []
 
     # -- lifecycle -----------------------------------------------------
@@ -466,7 +471,43 @@ class _FuzzyFinderManager:
             key = os.path.abspath(root)
         except Exception:
             return None
-        return self._file_cache.get(key)
+        cached = self._file_cache.get(key)
+        if cached is None:
+            return None
+        try:
+            mtime = os.path.getmtime(key)
+        except OSError:
+            return cached
+        if self._file_cache_mtime.get(key) != mtime:
+            # Root changed on disk since the entry was stored: drop it so
+            # the caller paints recents + re-indexes instead of a stale list.
+            # (Top-level mtime only catches direct-child changes; deeper
+            # edits are picked up by the background reload every show.)
+            self._file_cache.pop(key, None)
+            self._file_cache_mtime.pop(key, None)
+            return None
+        return cached
+
+    @staticmethod
+    def _idle_guarded(dialog, fn, *args):
+        """Wrap an idle callback so a destroyed dialog is never touched.
+
+        The background index thread outlives the dialog when the user
+        closes it mid-scan, so the destroyed check must run at fire time,
+        not at schedule time (a pre-schedule check alone still races).
+        """
+        def _fire(*_a):
+            try:
+                if getattr(dialog, "_destroyed", False):
+                    return False
+            except Exception:
+                return False
+            try:
+                fn(*args)
+            except Exception as e:
+                logger.debug(f"fuzzy background update failed: {e!r}")
+            return False
+        return _fire
 
     def _load_in_background(self, root: str, dialog) -> None:
         try:
@@ -475,15 +516,22 @@ class _FuzzyFinderManager:
             logger.debug(f"file index failed: {e!r}")
             try:
                 if GLib is not None:
-                    GLib.idle_add(dialog.set_indexing, False)
-                else:
+                    GLib.idle_add(self._idle_guarded(dialog, dialog.set_indexing, False))
+                elif not getattr(dialog, "_destroyed", False):
                     dialog.set_indexing(False)
             except Exception:
                 pass
             return
-        key = os.path.abspath(root)
+        try:
+            key = os.path.abspath(root)
+        except Exception:
+            key = root
         if files or os.path.isdir(root):
             self._file_cache[key] = files
+            try:
+                self._file_cache_mtime[key] = os.path.getmtime(key)
+            except OSError:
+                pass
         logger.debug(f"fuzzy: {len(files)} file(s) indexed under {root}")
         items: list[tuple[str, str]] = []
         for path in files:
@@ -494,11 +542,9 @@ class _FuzzyFinderManager:
             items.append((display, path))
         ordered = order_with_recent(items, self._recent)
         try:
-            if getattr(dialog, "_destroyed", False):
-                return
             if GLib is not None:
-                GLib.idle_add(dialog.set_files, ordered)
-            else:
+                GLib.idle_add(self._idle_guarded(dialog, dialog.set_files, ordered))
+            elif not getattr(dialog, "_destroyed", False):
                 dialog.set_files(ordered)
         except Exception as e:
             logger.debug(f"fuzzy background update failed: {e!r}")
@@ -516,7 +562,9 @@ class _FuzzyFinderManager:
 
         if root:
             cached = self._cached_files(root)
-            if cached:
+            if cached is not None:
+                # [] (empty project) is a valid hit: paint recents now; the
+                # background reload below still refreshes afterwards.
                 items: list[tuple[str, str]] = []
                 for path in cached:
                     try:
@@ -558,61 +606,6 @@ class _FuzzyFinderManager:
                 dialog.destroy()
             except Exception:
                 pass
-
-    def _notify_no_root(self) -> None:
-        logger.debug("fuzzy: no project root (project-mode off or empty)")
-        if Gtk is None:
-            return
-        try:
-            dialog = Gtk.MessageDialog(
-                transient_for=self.window,
-                modal=True,
-                message_type=Gtk.MessageType.INFO,
-                buttons=Gtk.ButtonsType.OK,
-                text="No project folder loaded.",
-            )
-            try:
-                dialog.format_secondary_text(
-                    "Enable the project-mode plugin and pick a folder "
-                    "with Ctrl+Shift+O first."
-                )
-            except Exception:
-                pass
-            try:
-                dialog.run()
-            finally:
-                try:
-                    dialog.destroy()
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.debug(f"no-root prompt failed: {e!r}")
-
-    def _notify_empty(self, root: str) -> None:
-        logger.debug(f"fuzzy: no files under {root}")
-        if Gtk is None:
-            return
-        try:
-            dialog = Gtk.MessageDialog(
-                transient_for=self.window,
-                modal=True,
-                message_type=Gtk.MessageType.INFO,
-                buttons=Gtk.ButtonsType.OK,
-                text="No files found in the project folder.",
-            )
-            try:
-                dialog.format_secondary_text(root)
-            except Exception:
-                pass
-            try:
-                dialog.run()
-            finally:
-                try:
-                    dialog.destroy()
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.debug(f"empty-root prompt failed: {e!r}")
 
     def _open_file(self, path: str) -> None:
         if Gio is None:
@@ -665,9 +658,6 @@ def attach(window) -> _FuzzyFinderManager | None:
     existing = getattr(window, "_thor_fuzzy_manager", None)
     if existing is not None:
         return existing
-    if getattr(window, "_thor_fuzzy_attached", False) and existing is None:
-        # Inconsistent state — treat as not attached.
-        pass
     manager = _FuzzyFinderManager(window)
     manager.attach()
     try:

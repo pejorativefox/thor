@@ -63,10 +63,6 @@ MAX_PROPOSALS = 300
 #: How long a complete list may be reused while the user extends the same
 #: prefix on the same line (framework filters locally, like VSCode).
 CACHE_TTL_S = 10.0
-#: Upper bound for stale (post-timeout) completion responses kept for the
-#: next keystroke. Oldest entries are dropped first; prevents unbounded
-#: growth when the server consistently answers late.
-LATE_RESPONSE_MAX = 32
 
 #: Interactive delay (ms). VSCode feels instant; the previous 150ms felt
 #: laggy. The framework still throttles while typing.
@@ -275,7 +271,6 @@ class _RoslynCompletionProviderBase:
         self._legacy_items: list = []
         self._legacy_key = None
         self._legacy_time = 0.0
-        self._late: list[tuple] = []
 
     # -- GtkSource interface -----------------------------------------
     def do_get_name(self):  # noqa: N802
@@ -769,14 +764,9 @@ class _RoslynCompletionProviderBase:
             except Exception:
                 items, incomplete = [], False
             with self._lock:
-                if box.get("expired"):
-                    self._late.append(((path, line), items))
-                    # Bound the stash: a chronically slow server must not
-                    # grow this list without limit; oldest goes first.
-                    while len(self._late) > LATE_RESPONSE_MAX:
-                        self._late.pop(0)
-                else:
-                    box["items"] = items
+                # Late (post-timeout) answers land in the cache too: the next
+                # keystroke on the same line picks them up with no new request.
+                box["items"] = items
                 self._cache[path] = _CacheEntry(
                     items=list(items), is_incomplete=incomplete, path=path,
                     line=line, char=char, offset=offset, prefix=prefix,

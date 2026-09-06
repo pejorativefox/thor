@@ -278,9 +278,6 @@ def handle_global_key(*args, **kwargs) -> bool:
         ctrl = kwargs.pop("ctrl", False)
         shift = kwargs.pop("shift", False)
         alt = kwargs.pop("alt", False)
-        if kwargs:
-            # unknown kwargs ignored
-            pass
     else:
         # too many
         return False
@@ -306,7 +303,8 @@ def handle_global_key(*args, **kwargs) -> bool:
     lowered = (keyname or "").lower()
     # Explicitly decline keys owned by sibling handlers, even though the
     # generic guard above already rejects most (shifted) variants.
-    if lowered in ("b", "p", "f", "g", "grave", "quoteleft", "asciigrave", "`"):
+    # Ctrl+B/J/E (panel_hider), Ctrl+P (fuzzy), Ctrl+` (terminal).
+    if lowered in ("b", "j", "e", "p", "f", "g", "grave", "quoteleft", "asciigrave", "`"):
         return False
     if lowered == "w":
         # Ctrl+W closes the active document tab, but only when the focus
