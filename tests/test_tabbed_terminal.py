@@ -220,3 +220,26 @@ def test_current_theme_follows_editor_scheme():
         pytest.skip("editor scheme is not atom-one-dark")
     theme = tabbedterminal.current_editor_theme()
     assert theme == tabbedterminal.atom_one_dark_theme()
+
+
+def test_terminal_panel_no_toolbar_buttons_or_status_label():
+    if tabbedterminal.Gtk is None:
+        pytest.skip("no Gtk")
+    panel = tabbedterminal.TerminalPanel()
+    assert not hasattr(panel, "_status")
+    # Verify no button labeled "+ New" or "Close" and no label "Terminal" in panel children
+    def _find_labels_and_buttons(widget):
+        texts = []
+        if isinstance(widget, tabbedterminal.Gtk.Label):
+            texts.append(widget.get_text())
+        elif isinstance(widget, tabbedterminal.Gtk.Button):
+            texts.append(widget.get_label() or "")
+        if hasattr(widget, "get_children"):
+            for child in widget.get_children():
+                texts.extend(_find_labels_and_buttons(child))
+        return texts
+
+    found = _find_labels_and_buttons(panel)
+    assert "+ New" not in found
+    assert "Close" not in found
+    assert "Terminal" not in found

@@ -381,24 +381,11 @@ if Gtk is not None:
         """Bottom-panel widget: toolbar + notebook of VTE terminals."""
 
         def __init__(self) -> None:
-            super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=0)
             self._labels: list[str] = []
             self._pids: dict = {}
             self.notebook = None
             self._fallback = None
-
-            toolbar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
-            new_btn = Gtk.Button.new_with_label("+ New")
-            new_btn.connect("clicked", lambda _b: self.new_terminal())
-            close_btn = Gtk.Button.new_with_label("Close")
-            close_btn.connect("clicked", lambda _b: self.close_current_terminal())
-            self._status = Gtk.Label(label="Terminal")
-            self._status.set_xalign(0.0)
-            self._status.set_hexpand(True)
-            toolbar.pack_start(new_btn, False, False, 0)
-            toolbar.pack_start(close_btn, False, False, 0)
-            toolbar.pack_start(self._status, True, True, 0)
-            self.pack_start(toolbar, False, False, 0)
 
             if Vte is None:
                 # Soft-only fallback: visible hint, no raise.
