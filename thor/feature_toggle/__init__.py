@@ -35,8 +35,12 @@ def _config_dir() -> str:
 
 class SettingsStore:
     def __init__(self, path: str | None = None) -> None:
-        config_dir = _config_dir()
-        os.makedirs(config_dir, exist_ok=True)
+        try:
+            config_dir = _config_dir()
+            os.makedirs(config_dir, exist_ok=True)
+        except OSError:
+            logger.debug("feature-toggle config dir unavailable", exc_info=True)
+            config_dir = _config_dir()
         self._path = path or os.path.join(config_dir, "settings.ini")
         self._data = dict(DEFAULTS)
         self.load()

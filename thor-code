@@ -43,12 +43,12 @@ def _pending_path() -> str:
     return os.path.join(base, "thor", "project-mode", "pending-root")
 
 def resolve_target(argv: list[str]) -> str | None:
-    args = [a for a in argv[1:] if a not in ("--new-window",)]
+    args = [a for a in argv[1:] if a not in ("--new-window", "-n")]
     if not args:
         return os.path.abspath(".")
     if args[0] in ("-h", "--help", "--version"):
         return None
-    return os.path.abspath(args[0])
+    return os.path.abspath(os.path.expanduser(args[0]))
 
 
 def launch(target: str) -> int:

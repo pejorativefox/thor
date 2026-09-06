@@ -32,11 +32,19 @@ def _home() -> str:
     return os.path.expanduser("~")
 
 
+def _abs_env(name: str) -> str | None:
+    """Absolute XDG override or None (relative values rejected per spec)."""
+    env = os.environ.get(name, "").strip()
+    if env and os.path.isabs(env):
+        return env
+    return None
+
+
 def data_home() -> str:
     """Return canonical user data directory ($XDG_DATA_HOME or ~/.local/share)."""
-    env = os.environ.get("XDG_DATA_HOME", "").strip()
+    env = _abs_env("XDG_DATA_HOME")
     if env:
-        return os.path.abspath(env)
+        return env
     if GLib is not None:
         try:
             base = GLib.get_user_data_dir()
@@ -49,9 +57,9 @@ def data_home() -> str:
 
 def config_home() -> str:
     """Return canonical user configuration directory ($XDG_CONFIG_HOME or ~/.config)."""
-    env = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    env = _abs_env("XDG_CONFIG_HOME")
     if env:
-        return os.path.abspath(env)
+        return env
     if GLib is not None:
         try:
             base = GLib.get_user_config_dir()
@@ -64,9 +72,9 @@ def config_home() -> str:
 
 def cache_home() -> str:
     """Return canonical user cache directory ($XDG_CACHE_HOME or ~/.cache)."""
-    env = os.environ.get("XDG_CACHE_HOME", "").strip()
+    env = _abs_env("XDG_CACHE_HOME")
     if env:
-        return os.path.abspath(env)
+        return env
     if GLib is not None:
         try:
             base = GLib.get_user_cache_dir()
@@ -79,9 +87,9 @@ def cache_home() -> str:
 
 def state_home() -> str:
     """Return canonical user state/logs directory ($XDG_STATE_HOME or ~/.local/state)."""
-    env = os.environ.get("XDG_STATE_HOME", "").strip()
+    env = _abs_env("XDG_STATE_HOME")
     if env:
-        return os.path.abspath(env)
+        return env
     if GLib is not None and hasattr(GLib, "get_user_state_dir"):
         try:
             base = GLib.get_user_state_dir()
@@ -94,9 +102,9 @@ def state_home() -> str:
 
 def bin_home() -> str:
     """Return canonical user binary directory ($XDG_BIN_HOME or ~/.local/bin)."""
-    env = os.environ.get("XDG_BIN_HOME", "").strip()
+    env = _abs_env("XDG_BIN_HOME")
     if env:
-        return os.path.abspath(env)
+        return env
     return os.path.join(_home(), ".local", "bin")
 
 
@@ -106,11 +114,11 @@ def ensure_dir(path: str) -> str:
         try:
             os.makedirs(path, exist_ok=True)
         except OSError:
-            logger.debug("ensure_dir failed for %s", path, exc_info=True)
+            logger.warning("ensure_dir failed for %s", path, exc_info=True)
         else:
             try:
                 if not os.path.isdir(path):
-                    logger.debug("ensure_dir: %s is not a directory", path)
+                    logger.warning("ensure_dir: %s is not a directory", path)
             except Exception:
                 logger.debug("ensure_dir check failed for %s", path, exc_info=True)
     return path

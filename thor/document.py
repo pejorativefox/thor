@@ -149,8 +149,8 @@ if GtkSource is not None:
                 start, end = self.get_bounds()
                 text = self.get_text(start, end, True)
             except Exception:
-                logger.debug("save: get_text failed", exc_info=True)
-                text = ""
+                logger.warning("save aborted: get_text failed", exc_info=True)
+                return False
             try:
                 path = loc.get_path()  # type: ignore[union-attr]
             except Exception:
@@ -549,31 +549,33 @@ if Gtk is not None and GtkSource is not None:
                     size = None
             if size is not None and size > _MAX_LOAD_BYTES:
                 logger.warning("load_location: skipping %r (%d bytes > 20MB)", location, size)
-                text = ""
-            else:
-                # Load bytes synchronously
-                try:
-                    ok, contents, etag = location.load_contents(None)  # type: ignore[attr-defined]
-                    if ok and contents is not None:
-                        if len(contents) > _MAX_LOAD_BYTES:
-                            logger.warning("load_location: truncating %r to 20MB", location)
-                            text = contents[:_MAX_LOAD_BYTES].decode("utf-8", errors="replace")
-                        else:
-                            text = contents.decode("utf-8", errors="replace")
+                return
+            # Load bytes synchronously; on failure keep the existing buffer
+            # untouched (never wipe to "" + mark clean on a read error).
+            text = None
+            try:
+                ok, contents, etag = location.load_contents(None)  # type: ignore[attr-defined]
+                if ok and contents is not None:
+                    if len(contents) > _MAX_LOAD_BYTES:
+                        logger.warning("load_location: truncating %r to 20MB", location)
+                        text = contents[:_MAX_LOAD_BYTES].decode("utf-8", errors="replace")
                     else:
-                        text = ""
+                        text = contents.decode("utf-8", errors="replace")
+            except Exception:
+                logger.debug("load_location: load_contents failed, trying direct read", exc_info=True)
+                try:
+                    path = location.get_path()
+                    with open(path, "r", encoding="utf-8", errors="replace") as f:  # type: ignore[arg-type]
+                        text = f.read(_MAX_LOAD_BYTES + 1)
+                    if len(text) > _MAX_LOAD_BYTES:
+                        logger.warning("load_location: truncating %r to 20MB", location)
+                        text = text[:_MAX_LOAD_BYTES]
                 except Exception:
-                    logger.debug("load_location: load_contents failed, trying direct read", exc_info=True)
-                    try:
-                        path = location.get_path()
-                        with open(path, "r", encoding="utf-8", errors="replace") as f:
-                            text = f.read(_MAX_LOAD_BYTES + 1)
-                        if len(text) > _MAX_LOAD_BYTES:
-                            logger.warning("load_location: truncating %r to 20MB", location)
-                            text = text[:_MAX_LOAD_BYTES]
-                    except Exception:
-                        logger.debug("load_location: direct read failed", exc_info=True)
-                        text = ""
+                    logger.warning("load_location: read failed for %r; keeping buffer", location, exc_info=True)
+                    return
+            if text is None:
+                logger.warning("load_location: read failed for %r; keeping buffer", location)
+                return
             try:
                 self._document.begin_not_undoable_action()
                 self._document.set_text(text)

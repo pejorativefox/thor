@@ -715,6 +715,10 @@ class AutoReloadManager:
             path = None
         if path is not None:
             try:
+                known = _baselines.get(path)
+                if known is not None and _file_mtime(path) == known:
+                    clear_conflict(window, doc)
+                    return False
                 differs = file_differs(doc, path)
             except Exception:
                 differs = None

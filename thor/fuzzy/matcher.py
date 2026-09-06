@@ -155,6 +155,8 @@ def _score_terms(
     total = 0.0
     positions: list[int] = []
     for term in terms:
+        if not term:
+            continue
         case_sensitive = any(ch.isupper() for ch in term)
         if len(term) > len(haystack) or term[0].lower() not in hay_lower:
             return None

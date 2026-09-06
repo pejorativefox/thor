@@ -142,9 +142,12 @@ def load_state(path: str | None = None) -> dict:
     state = dict(DEFAULT_STATE)
     state_path = path or xdg.state_path()
     try:
-        if os.path.isfile(state_path):
+        try:
             with open(state_path, "rb") as f:
                 data = f.read()
+        except OSError:
+            data = None
+        if data is not None:
             saved = _toml_loads(data)
             if saved:
                 return _coerce(state, saved)
@@ -192,7 +195,7 @@ def save_state(state: dict, path: str | None = None) -> None:
             finally:
                 os.close(dir_fd)
     except Exception as e:
-        logger.debug("save_state failed: %r", e, exc_info=True)
+        logger.warning("save_state failed: %r", e, exc_info=True)
     finally:
         if tmp is not None:
             try:

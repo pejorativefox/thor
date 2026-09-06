@@ -1105,7 +1105,11 @@ if Gtk is not None and GObject is not None:
                     logger.debug("save NORMAL emit failed", exc_info=True)
             else:
                 from .util import doc_path
-
+                try:
+                    tab.set_state(0)  # NORMAL — never leave a stuck SAVING spinner
+                    self.emit("active-tab-state-changed", tab)
+                except Exception:
+                    logger.debug("save NORMAL emit failed", exc_info=True)
                 logger.warning("save failed for %r; keeping dirty state", doc_path(doc))
             return ok
 
@@ -1193,7 +1197,7 @@ if Gtk is not None and GObject is not None:
                 return resp != Gtk.ResponseType.OK
             except Exception:
                 logger.debug("delete event dialog failed", exc_info=True)
-                return False
+                return True
 
 
 else:

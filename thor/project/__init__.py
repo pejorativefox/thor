@@ -7,10 +7,10 @@ logger = logging.getLogger(__name__)
 
 import os
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
-
 try:
     from . import gitstatus as _gitstatus
 except Exception:
@@ -117,8 +117,19 @@ def write_pending_root(folder: str, path: str | None = None) -> str | None:
     target = path or pending_root_path()
     try:
         os.makedirs(os.path.dirname(target), exist_ok=True)
-        with open(target, "w", encoding="utf-8") as f:
-            f.write(os.path.abspath(folder) + "\n")
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target) or ".", prefix=".pending-", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(os.path.abspath(folder) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, target)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     except OSError as e:
         logger.debug(f"pending write failed: {e!r}")
         return None
@@ -135,7 +146,7 @@ def take_pending_root(
     affects a later window. A handoff naming a non-directory is invalid
     intent (transient mount, typo) — it is left in place, never
     destroyed, so a later activation can still honor it. Returns the
-    abspath, or None when missing/stale/empty/not-a-directory.
+    realpath, or None when missing/stale/empty/not-a-directory.
     """
     target = path or pending_root_path()
     try:
@@ -157,7 +168,7 @@ def take_pending_root(
             logger.debug(f"pending consume failed: {target}", exc_info=True)
         return None
     try:
-        validated = os.path.abspath(content)
+        validated = os.path.realpath(content)
     except Exception:
         logger.debug(f"pending handoff invalid content: {content!r}", exc_info=True)
         return None

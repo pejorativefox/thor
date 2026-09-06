@@ -47,11 +47,15 @@ def decode_messages(buffer: bytearray) -> List[dict]:
         return messages
     while True:
         sep = buffer.find(b"\r\n\r\n")
+        sep_len = 4
+        if sep == -1:
+            sep = buffer.find(b"\n\n")
+            sep_len = 2
         if sep == -1:
             return messages
         header = buffer[:sep].decode("ascii", "replace")
         length: Optional[int] = None
-        for line in header.split("\r\n"):
+        for line in header.replace("\r\n", "\n").split("\n"):
             if line.lower().startswith("content-length:"):
                 try:
                     length = int(line.split(":", 1)[1].strip())
@@ -59,9 +63,9 @@ def decode_messages(buffer: bytearray) -> List[dict]:
                     length = None
         if length is None or length < 0 or length > _MAX_BUFFER_BYTES:
             # Corrupt framing or absurd size; drop the header and continue.
-            del buffer[: sep + 4]
+            del buffer[: sep + sep_len]
             continue
-        start = sep + 4
+        start = sep + sep_len
         if len(buffer) < start + length:
             return messages
         body = bytes(buffer[start: start + length])
@@ -169,10 +173,12 @@ class LspTransport:
                 logger.debug("LspTransport.stop: no fast clean exit, terminating")
             # Reap before closing pipes: closing stdout/stderr first races
             # the reader threads with read-on-closed-stream + hides the exit.
-            try:
-                proc.terminate()
-            except Exception:
-                logger.debug("LspTransport.stop: terminate failed", exc_info=True)
+            # Skip terminate when the process already exited cleanly.
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    logger.debug("LspTransport.stop: terminate failed", exc_info=True)
             try:
                 proc.wait(timeout=3)
             except Exception:
@@ -352,6 +358,7 @@ class PendingRequests:
 
     def add(self, request_id: int, callback: MessageHandler) -> None:
         with self._lock:
+            self._sweep_locked()
             self._callbacks[request_id] = (callback, time.monotonic())
 
     def pop(self, request_id: int) -> Optional[MessageHandler]:

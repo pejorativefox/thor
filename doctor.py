@@ -157,9 +157,18 @@ def main() -> int:
     legacy_marker = f"/tmp/thor-csharp-{os.getuid()}.log"
     marker_to_read = THOR_MARKER if os.path.isfile(THOR_MARKER) else (legacy_marker if os.path.isfile(legacy_marker) else None)
     if marker_to_read:
-        with open(marker_to_read, encoding="utf-8") as f:
-            tlines = f.read().strip().splitlines()
-        print(f"thor marker log exists ({marker_to_read}, {len(tlines)} lines), tail:")
+        try:
+            with open(marker_to_read, "rb") as f:
+                try:
+                    f.seek(-65536, 2)
+                except OSError:
+                    f.seek(0)
+                tail = f.read().decode("utf-8", errors="replace")
+            tlines = tail.strip().splitlines()
+        except (OSError, UnicodeError) as e:
+            print(f"thor marker log unreadable ({marker_to_read}): {e}")
+            tlines = []
+        print(f"thor marker log exists ({marker_to_read}, {len(tlines)} lines shown from tail), tail:")
         for line in tlines[-5:]:
             print(f"  {line}")
     else:

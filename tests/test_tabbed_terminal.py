@@ -11,8 +11,9 @@ import thor.terminal as tabbedterminal
 IS_THOR = True  # thor standalone, skip plugin UI tests
 
 
-def test_shell_is_fixed_bash():
-    assert tabbedterminal.SHELL_ARGV == ["/bin/bash"]
+def test_shell_is_fixed_bash(monkeypatch):
+    monkeypatch.delenv("SHELL", raising=False)
+    assert tabbedterminal._resolve_shell_argv() == ["/bin/bash"]
     assert tabbedterminal.PANEL_TITLE == "Terminal"
 
 

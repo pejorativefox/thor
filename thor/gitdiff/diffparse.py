@@ -93,6 +93,8 @@ def _cached_git_root(folder: str) -> str | None:
             for old_key, (stamp, _val) in list(_GIT_ROOT_CACHE.items()):
                 if (now - stamp) > 60.0:
                     _GIT_ROOT_CACHE.pop(old_key, None)
+            while len(_GIT_ROOT_CACHE) > 128:
+                _GIT_ROOT_CACHE.pop(next(iter(_GIT_ROOT_CACHE)), None)
         _GIT_ROOT_CACHE[key] = (now, result)
     except Exception:
         pass
@@ -359,12 +361,20 @@ def parse_unified_diff(text: str) -> dict[str, list[int]]:
             continue
         if old_count == 0:
             # Pure addition: new range is 1-based new_start..+count.
-            added.extend(n - 1 for n in range(new_start, new_start + new_count))
+            for n in range(new_start, new_start + new_count):
+                added.append(n - 1)
+                if len(added) + len(modified) + len(deleted) >= 20000:
+                    break
         elif new_count == 0:
             # Pure deletion: marker on the line above the gap (0-based).
             deleted.append(max(0, new_start - 1))
         else:
-            modified.extend(n - 1 for n in range(new_start, new_start + new_count))
+            for n in range(new_start, new_start + new_count):
+                modified.append(n - 1)
+                if len(added) + len(modified) + len(deleted) >= 20000:
+                    break
+        if len(added) + len(modified) + len(deleted) >= 20000:
+            break
     return {"added": added, "modified": modified, "deleted": deleted}
 
 

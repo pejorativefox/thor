@@ -488,6 +488,12 @@ class FindManager:
             self._update_label()
             return
         text = _buffer_text(doc)
+        if len(text) > 500_000:
+            _clear_tags(doc)
+            self._hits = []
+            self._current = None
+            self._update_label()
+            return
         hits = find_all(text, q, case_sensitive=cs)
         self._hits = hits
         if not hits:

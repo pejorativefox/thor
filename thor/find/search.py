@@ -10,7 +10,19 @@ from __future__ import annotations
 
 import re
 
+from functools import lru_cache
+
+
+@lru_cache(maxsize=128)
+def _compile_pattern(query: str):
+    return re.compile(re.escape(query), re.IGNORECASE)
 _MAX_HITS = 5000
+
+def _coerce_offset(cursor_offset) -> int | None:
+    try:
+        return int(cursor_offset)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 def find_all(
     text: str,
@@ -31,19 +43,19 @@ def find_all(
         return []
     if case_sensitive:
         hits: list[tuple[int, int]] = []
-        qlen = len(query)
         start = 0
+        qlen = len(query)
         while True:
-            idx = text.find(query, start)
-            if idx < 0:
+            i = text.find(query, start)
+            if i == -1:
                 break
-            hits.append((idx, idx + qlen))
-            start = idx + qlen
+            hits.append((i, i + qlen))
+            start = i + qlen
             if len(hits) >= _MAX_HITS:
                 break
         return hits
     try:
-        pattern = re.compile(re.escape(query), re.IGNORECASE)
+        pattern = _compile_pattern(query)
     except re.error:
         return []
     hits = [(m.start(), m.end()) for m in pattern.finditer(text) if m.end() > m.start()]
@@ -58,12 +70,15 @@ def next_index(hits: list[tuple[int, int]], cursor_offset: int, wrap: bool = Tru
     """
     if not hits:
         return None
+    off = _coerce_offset(cursor_offset)
+    if off is None:
+        return None
     for i, (s, _e) in enumerate(hits):
-        if s > cursor_offset:
+        if s > off:
             return i
         # cursor inside a hit → consider that hit as current, so next is i+1
         # but we already handled s > cursor; if cursor inside [s, e) we skip
-        if s <= cursor_offset < _e:
+        if s <= off < _e:
             nxt = i + 1
             if nxt < len(hits):
                 return nxt
@@ -76,12 +91,15 @@ def prev_index(hits: list[tuple[int, int]], cursor_offset: int, wrap: bool = Tru
     """Index of the last hit strictly before *cursor_offset*."""
     if not hits:
         return None
+    off = _coerce_offset(cursor_offset)
+    if off is None:
+        return None
     # iterate reverse to find last hit before cursor
     for i in range(len(hits) - 1, -1, -1):
         _s, e = hits[i]
-        if e <= cursor_offset:
+        if e <= off:
             return i
-        if _s <= cursor_offset < e:
+        if _s <= off < e:
             prv = i - 1
             if prv >= 0:
                 return prv
@@ -91,9 +109,10 @@ def prev_index(hits: list[tuple[int, int]], cursor_offset: int, wrap: bool = Tru
 
 def current_index(hits: list[tuple[int, int]], cursor_offset: int) -> int | None:
     """Index of hit containing *cursor_offset*, or None."""
+    off = _coerce_offset(cursor_offset)
+    if off is None:
+        return None
     for i, (s, e) in enumerate(hits):
-        if s <= cursor_offset < e:
-            return i
-        if s == cursor_offset:
+        if s <= off < e:
             return i
     return None

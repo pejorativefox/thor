@@ -95,7 +95,7 @@ class StreamingHandle:
     ``on_done`` callback still fires exactly once with the final code.
     """
 
-    thread: threading.Thread
+    thread: Optional[threading.Thread] = None
     cancelled: threading.Event = field(default_factory=threading.Event)
     proc: Optional["subprocess.Popen[str]"] = None
 
@@ -121,7 +121,9 @@ class StreamingHandle:
                 logger.debug(f"streaming cancel kill failed: {e!r}")
 
     def join(self, timeout: Optional[float] = None) -> None:
-        self.thread.join(timeout)
+        thread = self.thread
+        if thread is not None:
+            thread.join(timeout)
 
 
 def run_streaming(
@@ -143,8 +145,7 @@ def run_streaming(
     Returns a :class:`StreamingHandle`; call :meth:`cancel` to stop the
     child (used by the plugin deactivate path to reap orphans).
     """
-    handle = StreamingHandle(thread=threading.current_thread())  # placeholder, replaced below
-
+    handle = StreamingHandle()
     def _worker() -> None:
         logger.debug(f"run_streaming start: {' '.join(argv)}")
         try:
@@ -183,6 +184,11 @@ def run_streaming(
                 on_line("stdout", line)
         except OSError as e:
             logger.debug(f"run_streaming read failed: {e!r}")
+        finally:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
         if handle.cancelled.is_set():
             handle.cancel()
         try:
@@ -192,7 +198,11 @@ def run_streaming(
                 proc.kill()
             except OSError:
                 pass
-            rc = proc.wait()
+            try:
+                rc = proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                logger.debug("run_streaming: child did not exit after kill; abandoning")
+                return
         logger.debug(f"run_streaming done rc={rc}: {' '.join(argv)}")
         try:
             on_done(rc)

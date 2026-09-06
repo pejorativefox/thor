@@ -11,7 +11,9 @@ try:
 
     setup_logging()
 except Exception:
-    pass
+    import logging as _logging
+
+    _logging.getLogger(__name__).debug("setup_logging failed", exc_info=True)
 
 __version__ = "0.1.0"
 __app_id__ = "dev.thor.Editor"

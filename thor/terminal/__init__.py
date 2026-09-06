@@ -32,7 +32,6 @@ def _resolve_shell_argv() -> list[str]:
     return ["/bin/bash"]
 
 
-SHELL_ARGV = _resolve_shell_argv()
 BASE_LABEL = "Terminal"
 
 SCHEME_SETTINGS_SCHEMA = "org.x.editor.preferences.editor"
@@ -992,7 +991,7 @@ def detach(window) -> None:
 __all__ = [
     "PANEL_TITLE",
     "PANEL_ICONS",
-    "SHELL_ARGV",
+    "_resolve_shell_argv",
     "BASE_LABEL",
     "ATOM_ONE_DARK",
     "SCHEME_STYLE_MAP",

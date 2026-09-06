@@ -13,6 +13,7 @@ loaded, a hint dialog is shown instead of raising.
 
 from __future__ import annotations
 
+import collections
 import logging
 import os
 import threading
@@ -104,11 +105,11 @@ def find_project_root(window) -> str | None:
     except Exception as e:
         logger.debug("find_project_root children failed: %r", e, exc_info=True)
         return None
-    queue = list(children)
+    queue = collections.deque(children)
     seen_ids: set[int] = set()
     seen = 0
     while queue and seen < 256:
-        widget = queue.pop(0)
+        widget = queue.popleft()
         seen += 1
         try:
             wid = id(widget)
@@ -445,7 +446,7 @@ class _FuzzyFinderManager:
     # -- key handling --------------------------------------------------
 
     def _handle_global_key(self, keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
-        if ctrl and not shift and not alt and keyname.lower() == "p":
+        if ctrl and not shift and not alt and (keyname or "").lower() == "p":
             logger.debug("key: Ctrl+P fuzzy-finder")
             self._show_finder()
             return True
@@ -718,7 +719,7 @@ class FuzzyFinderPlugin:  # type: ignore[no-redef]
 
     def _handle_global_key(self, keyname, ctrl, shift, alt):  # type: ignore[no-untyped-def]
         # Match plugin logic: Ctrl+P shows finder, else False
-        if ctrl and not shift and not alt and keyname.lower() == "p":
+        if ctrl and not shift and not alt and (keyname or "").lower() == "p":
             try:
                 self._show_finder()
             except Exception:
