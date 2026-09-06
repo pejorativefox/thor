@@ -75,9 +75,7 @@ if Gtk is not None and GObject is not None:
             self._bottom_panel = ThorPanel(orientation=Gtk.Orientation.HORIZONTAL)
             self._bottom_panel.set_size_request(-1, 200)
             self._vpaned.pack2(self._bottom_panel, False, True)  # shrink True so hide reclaims
-            # Statusbar
-            self._statusbar = Gtk.Statusbar()
-            # Wrap menubar + hpaned + statusbar (XFCE SSD, not CSD headerbar)
+            # Wrap menubar + hpaned (XFCE SSD, not CSD headerbar)
             # Single add — avoids GtkApplication's extra app-menu child confusion.
             vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
             self._vbox = vbox  # exposed for find bar (thor.find)
@@ -85,7 +83,6 @@ if Gtk is not None and GObject is not None:
             if menubar is not None:
                 vbox.pack_start(menubar, False, False, 0)
             vbox.pack_start(self._hpaned, True, True, 0)
-            vbox.pack_start(self._statusbar, False, False, 0)
             self.add(vbox)
             # Do after show so allocation exists; use idle
             def _set_initial_positions():
@@ -335,7 +332,7 @@ if Gtk is not None and GObject is not None:
             return self._bottom_panel
 
         def get_statusbar(self):
-            return self._statusbar
+            return None
 
         def get_searchbar(self):
             # Thor's document find bar (Ctrl+F)

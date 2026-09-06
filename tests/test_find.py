@@ -146,3 +146,39 @@ def test_find_bar_ctrl_f():
     detach(win)
     win.destroy()
     app.quit()
+
+
+def test_statusbar_removed_from_window():
+    try:
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("GtkSource", "4")
+        from gi.repository import Gtk
+        from thor.window import ThorWindow
+    except Exception as e:
+        import pytest
+
+        pytest.skip(f"no Gtk: {e}")
+    if not os.environ.get("DISPLAY"):
+        import pytest
+
+        pytest.skip("no DISPLAY")
+
+    app = Gtk.Application(application_id="dev.thor.teststatusbar")
+    win = ThorWindow(app, initial_folder=None)
+    try:
+        assert win.get_statusbar() is None
+        assert not hasattr(win, "_statusbar")
+
+        def _has_statusbar(widget):
+            if isinstance(widget, Gtk.Statusbar):
+                return True
+            if hasattr(widget, "get_children"):
+                return any(_has_statusbar(child) for child in widget.get_children())
+            return False
+
+        assert not _has_statusbar(win)
+    finally:
+        win.destroy()
+        app.quit()
