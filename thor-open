@@ -67,6 +67,8 @@ def open_location(path: str, line: int | None, col: int | None = None) -> int:
     if not path:
         print("thor-open: empty path", file=sys.stderr)
         return 2
+    # Resolve absolute path so running Thor instance (with possibly different CWD) opens it correctly
+    abs_path = os.path.abspath(os.path.expanduser(path))
     # If file doesn't exist yet, still try — Thor will create tab
     thor_bin = os.path.join(os.path.dirname(__file__), "thor-cli")
     argv: list[str]
@@ -79,7 +81,7 @@ def open_location(path: str, line: int | None, col: int | None = None) -> int:
             argv.append(f"+{line}:{col}")
         else:
             argv.append(f"+{line}")
-    argv.append(path)
+    argv.append(abs_path)
     try:
         subprocess.Popen(
             argv,

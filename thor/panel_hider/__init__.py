@@ -75,7 +75,10 @@ def _set_panes(window, side=None, bottom=None) -> None:
         widget = _panel_widget(window, which)
         if widget is not None:
             try:
-                widget.set_visible(bool(value))
+                if hasattr(widget, "set_target_visible"):
+                    widget.set_target_visible(bool(value))
+                else:
+                    widget.set_visible(bool(value))
             except Exception as e:
                 logger.debug(f"panes widget failed: {e!r}")
     settings = _panes_settings()

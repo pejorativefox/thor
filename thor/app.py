@@ -28,84 +28,100 @@ except Exception:  # headless
 APP_ID = "dev.thor.Editor"
 
 
-def _split_location_arg(arg: str) -> tuple[str, int | None]:
-    """Return (path_without_line, line_or_None) for file:line / file(line) forms."""
+def _split_location_arg(arg: str) -> tuple[str, int | None, int | None]:
+    """Return (path_without_line, line_or_None, col_or_None) for file:line[:col] / file(line[,col]) forms."""
     m = re.match(r"^(.*?)\((\d+)(?:[,:](\d+))?\)\s*$", arg)
     if m:
         try:
-            return m.group(1).strip(), max(1, int(m.group(2)))
+            line = max(1, int(m.group(2)))
+            col = max(1, int(m.group(3))) if m.group(3) else None
+            return m.group(1).strip(), line, col
         except Exception:
-            return arg, None
+            return arg, None, None
     m = re.match(r"^(.*?):(\d+)(?::(\d+))?\s*$", arg)
     if m:
         cand = m.group(1).strip()
         if cand:
             # Treat as line suffix when it looks like a path; avoids splitting
-            # option-like strings while still handling `file.cs:10`, `a/b:10`.
+            # option-like strings while still handling `file.cs:10`, `a/b:10:5`.
             looks_like_path = os.path.exists(cand) or os.path.isfile(cand) or "." in os.path.basename(cand) or "/" in cand
             # Accept either obvious path shape or any non-option cand — covers
             # new files that don't exist yet.
             if looks_like_path or not cand.startswith("-"):
                 try:
-                    return cand, max(1, int(m.group(2)))
+                    line = max(1, int(m.group(2)))
+                    col = max(1, int(m.group(3))) if m.group(3) else None
+                    return cand, line, col
                 except Exception:
                     pass
-    return arg, None
+    return arg, None, None
 
 
-def _resolve_initial_target(args: list[str]) -> tuple[str | None, list[str]]:
+def _resolve_initial_target(args: list[str], cwd: str | None = None) -> tuple[str | None, list[str]]:
     """First non-option arg is file/folder target; rest are extra files.
 
     Returns (folder, files). For callers needing line numbers use
     _resolve_initial_target_with_lines().
     """
-    folder, files, _lines = _resolve_initial_target_with_lines(args)
+    folder, files, _lines = _resolve_initial_target_with_lines(args, cwd=cwd)
     return folder, files
 
 
-def _resolve_initial_target_with_lines(args: list[str]) -> tuple[str | None, list[str], dict[str, int]]:
-    """Like _resolve_initial_target but also returns {abspath: line} for +N / file:line."""
+def _resolve_initial_target_with_lines(
+    args: list[str], cwd: str | None = None
+) -> tuple[str | None, list[str], dict[str, tuple[int, int | None]]]:
+    """Like _resolve_initial_target but also returns {abspath: (line, col)} for +N[:M] / file:line[:col]."""
     folder: str | None = None
     files: list[str] = []
-    file_lines: dict[str, int] = {}
-    pending_line: int | None = None
+    file_locs: dict[str, tuple[int, int | None]] = {}
+    pending_loc: tuple[int, int | None] | None = None
     for a in args[1:]:
-        if a in ("--help", "-h", "--version", "-v", "--new-window"):
+        if a in ("--help", "-h", "--version", "-v", "--new-window", "-n"):
             continue
-        if a.startswith("+") and a[1:].isdigit():
-            try:
-                pending_line = max(1, int(a[1:]))
-            except Exception:
-                pending_line = None
-            continue
+        if a.startswith("+"):
+            parts = a[1:].split(":")
+            if parts[0].isdigit():
+                try:
+                    line = max(1, int(parts[0]))
+                    col = max(1, int(parts[1])) if len(parts) > 1 and parts[1].isdigit() else None
+                    pending_loc = (line, col)
+                except Exception:
+                    pending_loc = None
+                continue
         if a.startswith("-"):
             continue
-        path_part, line_from_suffix = _split_location_arg(a)
-        line = line_from_suffix if line_from_suffix is not None else pending_line
-        pending_line = None
-        p = os.path.abspath(path_part)
-        if line is None and os.path.isdir(p) and folder is None:
+        path_part, line_from_suffix, col_from_suffix = _split_location_arg(a)
+        if line_from_suffix is not None:
+            loc = (line_from_suffix, col_from_suffix)
+        else:
+            loc = pending_loc
+        pending_loc = None
+
+        if cwd and not os.path.isabs(os.path.expanduser(path_part)):
+            p = os.path.abspath(os.path.join(cwd, os.path.expanduser(path_part)))
+        else:
+            p = os.path.abspath(os.path.expanduser(path_part))
+
+        if loc is not None:
+            files.append(p)
+            file_locs[p] = loc
+        elif os.path.isdir(p) and folder is None:
             folder = p
-        elif os.path.isfile(p):
+        elif os.path.isfile(p) or os.path.exists(p):
             files.append(p)
-            if line is not None:
-                file_lines[p] = line
-        elif os.path.exists(p):
+        elif p.endswith(("/", "\\")):
+            if folder is None:
+                folder = p
+        elif os.path.splitext(p)[1]:
             files.append(p)
-            if line is not None:
-                file_lines[p] = line
         elif folder is None:
-            # non-existent folder arg -> treat as folder to create/open
             folder = p
         else:
-            # extra non-existent file arg (e.g. new file) — still add as file
             files.append(p)
-            if line is not None:
-                file_lines[p] = line
     if folder is None and not files:
         # default to cwd (like thor-code .)
-        folder = os.getcwd()
-    return folder, files, file_lines
+        folder = cwd or os.getcwd()
+    return folder, files, file_locs
 
 
 if Gtk is not None:
@@ -165,6 +181,30 @@ if Gtk is not None:
                 self.set_accels_for_action("app.quit", ["<Primary>q"])
             except Exception:
                 logger.debug("set_accels failed", exc_info=True)
+
+        def do_window_removed(self, window: Gtk.Window) -> None:  # type: ignore[override]
+            try:
+                if hasattr(window, "_save_panel_state"):
+                    window._save_panel_state()
+            except Exception:
+                pass
+            try:
+                Gtk.Application.do_window_removed(self, window)
+            except Exception:
+                pass
+
+        def do_shutdown(self) -> None:  # type: ignore[override]
+            try:
+                for win in self.get_windows():
+                    if hasattr(win, "_save_panel_state"):
+                        win._save_panel_state()
+            except Exception:
+                pass
+            try:
+                Gtk.Application.do_shutdown(self)
+            except Exception:
+                pass
+
         def do_activate(self) -> None:  # type: ignore[override]
             # Snapshot-then-clear: consume pending state up front so a
             # re-entrant activate (e.g. open while opening) can't double-open.
@@ -186,9 +226,16 @@ if Gtk is not None:
                 # Existing window: open pending files there (e.g. thor file:line while running)
                 for fp in pending_files:
                     try:
-                        loc = Gio.File.new_for_path(fp)  # type: ignore[union-attr]
-                        line = pending_lines.get(fp, -1)
-                        win.create_tab_from_location(loc, line_pos=line - 1 if line and line > 0 else -1, create=True, jump_to=True)
+                        loc = pending_lines.get(fp)
+                        if isinstance(loc, tuple):
+                            line, col = loc
+                        elif isinstance(loc, int):
+                            line, col = loc, None
+                        else:
+                            line, col = None, None
+                        line_pos = (line - 1) if line and line > 0 else -1
+                        col_pos = (col - 1) if col and col > 0 else -1
+                        win.open_file(fp, line_pos=line_pos, col_pos=col_pos, jump_to=True)
                     except Exception:
                         logger.debug("do_activate: open %s failed", fp, exc_info=True)
                 try:
@@ -198,6 +245,8 @@ if Gtk is not None:
                     logger.debug("do_activate: empty notebook guard failed", exc_info=True)
             try:
                 win.present()
+                if GLib is not None and hasattr(win, "focus_active_editor"):
+                    GLib.idle_add(win.focus_active_editor)
             except Exception:
                 logger.debug("do_activate: present failed", exc_info=True)
 
@@ -265,6 +314,8 @@ if Gtk is not None:
                         logger.debug("do_open: remote open failed", exc_info=True)
             try:
                 win.present()
+                if GLib is not None and hasattr(win, "focus_active_editor"):
+                    GLib.idle_add(win.focus_active_editor)
             except Exception:
                 logger.debug("do_open: present failed", exc_info=True)
 
@@ -274,9 +325,15 @@ if Gtk is not None:
             # have been swallowed at __init__); the options dict is best-effort.
             try:
                 # cmd is Gio.ApplicationCommandLine
-                argv = cmd.get_arguments()  # type: ignore[union-attr]
+                argv = list(cmd.get_arguments() or [])
+                client_cwd = None
+                try:
+                    if hasattr(cmd, "get_cwd"):
+                        client_cwd = cmd.get_cwd()
+                except Exception:
+                    client_cwd = None
                 # argv[0] is program name
-                folder, files, file_lines = _resolve_initial_target_with_lines(list(argv or []))
+                folder, files, file_lines = _resolve_initial_target_with_lines(argv, cwd=client_cwd)
                 new_window = "--new-window" in (argv or []) or "-n" in (argv or [])
                 try:
                     opts = cmd.get_options_dict()  # type: ignore[attr-defined]
@@ -302,16 +359,22 @@ if Gtk is not None:
                     logger.debug("do_command_line: set_exit_status failed", exc_info=True)
 
         # -- helpers ---------------------------------------------------
-        def _create_window(self, folder: str | None, files: list[str], file_lines: dict[str, int] | None = None) -> ThorWindow:
+        def _create_window(self, folder: str | None, files: list[str], file_lines: dict | None = None) -> ThorWindow:
             win = ThorWindow(self, initial_folder=folder)
             file_lines = file_lines or {}
             # Open requested files
             for fp in files:
                 try:
-                    loc = Gio.File.new_for_path(fp)
-                    line = file_lines.get(fp)
+                    loc = file_lines.get(fp)
+                    if isinstance(loc, tuple):
+                        line, col = loc
+                    elif isinstance(loc, int):
+                        line, col = loc, None
+                    else:
+                        line, col = None, None
                     line_pos = (line - 1) if line and line > 0 else -1
-                    win.create_tab_from_location(loc, line_pos=line_pos, create=True, jump_to=True)
+                    col_pos = (col - 1) if col and col > 0 else -1
+                    win.open_file(fp, line_pos=line_pos, col_pos=col_pos, jump_to=True)
                 except Exception as e:
                     logger.warning("open %s failed: %r", fp, e)
             try:

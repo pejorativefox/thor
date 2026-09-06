@@ -377,3 +377,36 @@ def test_entry_ctrl_n_p_and_paging():
             dialog.destroy()
         except Exception:
             pass
+
+
+def test_direct_file_path_out_of_tree():
+    if fuzzyfinder.Gtk is None:
+        pytest.skip("no Gtk")
+    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+        f.write(b"out of tree content")
+        out_path = f.name
+    try:
+        try:
+            dialog = fuzzyfinder.FuzzyFinderDialog(parent=None)
+        except Exception as e:
+            pytest.skip(f"no display: {e}")
+        try:
+            dialog.set_files([("in_tree.txt", "/project/in_tree.txt")])
+            dialog._entry.set_text(out_path)
+            # Refilter should recognize the out of tree path and put it at top of store
+            assert len(dialog._store) >= 1
+            selected = dialog._selected_path()
+            assert selected == out_path
+
+            opened: list[str] = []
+            dialog.connect("open-file", lambda _w, p: opened.append(p))
+            dialog._activate_selected()
+            assert opened == [out_path]
+        finally:
+            try:
+                dialog.destroy()
+            except Exception:
+                pass
+    finally:
+        if os.path.exists(out_path):
+            os.unlink(out_path)

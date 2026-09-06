@@ -234,7 +234,12 @@ if Gtk is not None:
             if getattr(self, "_destroyed", False):
                 return
             if total == 0 and not self._indexing:
-                text = "No files found"
+                if query and shown > 0:
+                    text = f"{shown} match{'es' if shown != 1 else ''}"
+                elif query:
+                    text = "No matches"
+                else:
+                    text = "Type a path or search files"
             elif shown == 0 and query:
                 text = "No matches"
             else:
@@ -262,21 +267,44 @@ if Gtk is not None:
             except Exception as e:
                 logger.debug("fuzzy store clear failed: %r", e, exc_info=True)
                 return
+
+            query_trimmed = query.strip()
+            direct_file = None
+            if query_trimmed:
+                try:
+                    expanded = os.path.abspath(os.path.expanduser(query_trimmed))
+                    if os.path.isfile(expanded):
+                        direct_file = expanded
+                except Exception:
+                    direct_file = None
+
             try:
+                # If query points to an existing file on disk, offer it at top
+                if direct_file is not None:
+                    display_text = f"{direct_file} (Open file)"
+                    markup = f"<b>{GLib.markup_escape_text(direct_file)}</b> <i>(file on disk)</i>" if GLib else direct_file
+                    self._store.append([display_text, markup, direct_file])
+
                 if self._index is not None:
                     # Single DP per candidate: scores AND positions come back
                     # together; never re-run fuzzy_match per row.
                     for display, _score, positions in self._index.search_scored(query, limit=MAX_ROWS):
                         if getattr(self, "_destroyed", False):
                             return
+                        path = labels.get(display, display)
+                        if direct_file and os.path.abspath(path) == direct_file:
+                            continue
                         self._store.append(
-                            [display, markup_highlight(display, positions), labels.get(display, display)]
+                            [display, markup_highlight(display, positions), path]
                         )
                 else:
                     displays = [display for display, _path in self._files]
                     for display in fuzzy_find(query, displays, limit=MAX_ROWS):
                         if getattr(self, "_destroyed", False):
                             return
+                        path = labels.get(display, display)
+                        if direct_file and os.path.abspath(path) == direct_file:
+                            continue
                         positions: list[int] = []
                         if query.strip():
                             try:
@@ -286,7 +314,7 @@ if Gtk is not None:
                                 logger.debug("fuzzy highlight failed: %r", e, exc_info=True)
                                 positions = []
                         self._store.append(
-                            [display, markup_highlight(display, positions), labels.get(display, display)]
+                            [display, markup_highlight(display, positions), path]
                         )
             except Exception as e:
                 logger.debug(f"fuzzy refilter failed: {e!r}")
@@ -316,6 +344,15 @@ if Gtk is not None:
 
         def _activate_selected(self) -> None:
             path = self._selected_path()
+            if not path:
+                try:
+                    query = self._entry.get_text().strip()
+                    if query:
+                        expanded = os.path.abspath(os.path.expanduser(query))
+                        if os.path.isfile(expanded):
+                            path = expanded
+                except Exception:
+                    path = None
             if path:
                 self.emit("open-file", path)
 
@@ -471,34 +508,49 @@ class _FuzzyFinderManager:
         if Gtk is None:
             return
         root = find_project_root(self.window)
-        if not root:
-            self._notify_no_root()
-            return
         try:
             dialog = FuzzyFinderDialog(parent=self.window)
         except Exception as e:
             logger.debug(f"fuzzy dialog create failed: {e!r}")
             return
-        cached = self._cached_files(root)
-        if cached:
-            items: list[tuple[str, str]] = []
-            for path in cached:
-                try:
-                    display = os.path.relpath(path, root)
-                except Exception:
-                    display = path
-                items.append((display, path))
-            dialog.set_files(order_with_recent(items, self._recent))
+
+        if root:
+            cached = self._cached_files(root)
+            if cached:
+                items: list[tuple[str, str]] = []
+                for path in cached:
+                    try:
+                        display = os.path.relpath(path, root)
+                    except Exception:
+                        display = path
+                    items.append((display, path))
+                dialog.set_files(order_with_recent(items, self._recent))
+            else:
+                recent_items = [
+                    (os.path.basename(p), p)
+                    for p in self._recent
+                    if os.path.isfile(p)
+                ]
+                if recent_items:
+                    dialog.set_files(recent_items)
+                dialog.set_indexing(True)
+            try:
+                thread = threading.Thread(
+                    target=self._load_in_background, args=(root, dialog), daemon=True
+                )
+                thread.start()
+            except Exception as e:
+                logger.debug(f"fuzzy background index failed: {e!r}")
         else:
-            dialog.set_indexing(True)
+            # No project root: populate with recent files on disk (if any)
+            recent_items = [
+                (os.path.basename(p), p)
+                for p in self._recent
+                if os.path.isfile(p)
+            ]
+            dialog.set_files(recent_items)
+
         dialog.connect("open-file", lambda _w, p: (self._open_file(p), dialog.destroy()))
-        try:
-            thread = threading.Thread(
-                target=self._load_in_background, args=(root, dialog), daemon=True
-            )
-            thread.start()
-        except Exception as e:
-            logger.debug(f"fuzzy background index failed: {e!r}")
         try:
             dialog.run()
         finally:

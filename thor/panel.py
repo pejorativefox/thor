@@ -42,6 +42,7 @@ if Gtk is not None:
                 self._notebook.set_show_tabs(True)
             except Exception:
                 logger.debug("set_show_tabs failed", exc_info=True)
+            self._target_visible = True
             self.pack_start(self._notebook, True, True, 0)
             self.show_all()
             # Start hidden when empty
@@ -65,7 +66,6 @@ if Gtk is not None:
             self._notebook.append_page(widget, label)
             widget.show_all()
             self._notebook.set_tab_reorderable(widget, True)
-            self.show()
             self._notebook.show()
             # Auto-activate first item
             if self._notebook.get_n_pages() == 1:
@@ -101,8 +101,15 @@ if Gtk is not None:
         def get_orientation(self) -> Gtk.Orientation:
             return self._orientation
 
+        def set_target_visible(self, visible: bool) -> None:
+            self._target_visible = bool(visible)
+            self._sync_visibility()
+
+        def get_target_visible(self) -> bool:
+            return bool(getattr(self, "_target_visible", True))
+
         def _sync_visibility(self) -> None:
-            if self.get_n_items() == 0:
+            if self.get_n_items() == 0 or not getattr(self, "_target_visible", True):
                 self.hide()
             else:
                 self.show()

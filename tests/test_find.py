@@ -178,3 +178,46 @@ def test_chrome_removed_from_window():
     finally:
         win.destroy()
         app.quit()
+
+
+def test_open_out_of_tree_file(tmp_path):
+    try:
+        import gi
+
+        gi.require_version("Gtk", "3.0")
+        gi.require_version("GtkSource", "4")
+        from gi.repository import Gtk
+        from thor.window import ThorWindow
+    except Exception as e:
+        import pytest
+
+        pytest.skip(f"no Gtk: {e}")
+    if not os.environ.get("DISPLAY"):
+        import pytest
+
+        pytest.skip("no DISPLAY")
+
+    app = Gtk.Application(application_id="dev.thor.testopenfile")
+    win = ThorWindow(app, initial_folder=None)
+    test_file = tmp_path / "out_of_tree.txt"
+    test_file.write_text("hello out of tree world")
+    try:
+        tab = win.open_file(str(test_file))
+        assert tab is not None
+        assert tab.get_document() is not None
+        text = tab.get_document().get_text(
+            tab.get_document().get_start_iter(),
+            tab.get_document().get_end_iter(),
+            True,
+        )
+        assert "hello out of tree world" in text
+        # Opening same file should return existing tab
+        tab2 = win.open_file(str(test_file), line_pos=0, col_pos=6)
+        assert tab2 is tab
+        cursor_iter = tab.get_document().get_iter_at_mark(tab.get_document().get_insert())
+        assert cursor_iter.get_line() == 0
+        assert cursor_iter.get_line_offset() == 6
+    finally:
+        win.destroy()
+        app.quit()
+
