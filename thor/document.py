@@ -420,6 +420,12 @@ if GtkSource is not None and Gtk is not None:
                     getattr(v, _name)(_arg)
                 except Exception:
                     logger.debug("new_with_buffer: default %s failed", _name, exc_info=True)
+            try:
+                from .fonts import apply_to_view
+
+                apply_to_view(v)
+            except Exception:
+                logger.debug("new_with_buffer: font apply failed", exc_info=True)
             return v
 
 else:

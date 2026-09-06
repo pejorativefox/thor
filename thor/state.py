@@ -32,6 +32,9 @@ DEFAULT_STATE = {
     "window_width": 1280,
     "window_height": 800,
     "window_maximized": False,
+    "editor_font": "",
+    "terminal_font": "",
+    "panel_font": "",
 }
 
 

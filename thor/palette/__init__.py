@@ -91,13 +91,34 @@ def open_settings(window, path: str | None = None):
 
 def get_commands(window) -> list[dict]:
     """Command registry — add new palette items here."""
-    return [
+    try:
+        from thor.fonts import choose_all
+    except Exception:
+        choose_all = None  # type: ignore[assignment]
+
+    def _fonts_command():
+        if choose_all is None:
+            return None
+        return {
+            "label": "Select Fonts",
+            "detail": "Pick editor, terminal and side panel fonts",
+            "run": lambda: choose_all(window),
+        }
+
+    commands = [
         {
             "label": "Edit Settings file",
             "detail": "Open the default settings file in the editor",
             "run": lambda: open_settings(window),
         },
     ]
+    try:
+        _cmd = _fonts_command()
+    except Exception:
+        _cmd = None
+    if _cmd is not None:
+        commands.append(_cmd)
+    return commands
 
 
 def filter_commands(query: str, labels: list[str]) -> list[tuple[str, list[int]]]:
@@ -120,6 +141,10 @@ def filter_commands(query: str, labels: list[str]) -> list[tuple[str, list[int]]
 if Gtk is not None:
 
     class CommandPaletteDialog(Gtk.Dialog):  # type: ignore[misc]
+        __gsignals__ = {
+            "activate-command": (GObject.SignalFlags.RUN_LAST, None, (GObject.TYPE_STRING,)),
+        }
+
         def __init__(self, parent=None) -> None:
             super().__init__(title="Command Palette")
             self._destroyed = False
@@ -235,6 +260,14 @@ if Gtk is not None:
                     pass
             return 0
 
+        def _activate_selected(self) -> None:
+            label = self._selected_label()
+            if label is None:
+                return
+            try:
+                self.emit("activate-command", label)
+            except Exception as e:
+                logger.debug("palette activate emit failed: %r", e, exc_info=True)
 
         def _on_entry_key(self, _entry, event) -> bool:
             try:

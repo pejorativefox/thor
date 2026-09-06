@@ -70,7 +70,7 @@ def test_save_and_load_state_roundtrip():
         }
         state.save_state(custom_state, path)
         loaded = state.load_state(path)
-        assert loaded == custom_state
+        assert loaded == {**state.DEFAULT_STATE, **custom_state}
 
 
 def test_none_coordinates_survive_roundtrip():

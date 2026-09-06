@@ -68,6 +68,13 @@ def attach_builtin_plugins(window, initial_folder: str | None = None) -> None:
             window._restore_panel_state()
         except Exception as e:
             logger.debug("restore panel state failed: %r", e, exc_info=True)
+    # Re-apply saved fonts (editor, terminal, side panel)
+    try:
+        from thor.fonts import apply_all
+
+        apply_all(window)
+    except Exception as e:
+        logger.debug("restore fonts failed: %r", e, exc_info=True)
 
     # Always ensure the active editor view is focused on startup
     if hasattr(window, "focus_active_editor"):

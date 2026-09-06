@@ -455,9 +455,15 @@ if Gtk is not None:
             except Exception:
                 pass
             try:
-                term.set_font(Pango.FontDescription("Monospace 10"))
+                from thor.fonts import apply_to_term
+
+                if not apply_to_term(term):
+                    term.set_font(Pango.FontDescription("Monospace 10"))
             except Exception:
-                pass
+                try:
+                    term.set_font(Pango.FontDescription("Monospace 10"))
+                except Exception:
+                    pass
             try:
                 self.apply_theme_to_term(term)
             except Exception as e:
