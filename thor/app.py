@@ -124,6 +124,49 @@ def _resolve_initial_target_with_lines(
     return folder, files, file_locs
 
 
+def _argv_has_path_arg(args: list[str]) -> bool:
+    """True when argv carries at least one file/folder target arg.
+
+    Skips help/version/new-window flags, other `-x` options, and lone
+    `+line` markers. A defaulted cwd folder (bare `thor`) yields False;
+    an explicit `thor .` yields True.
+    """
+    for a in args[1:]:
+        if a in ("--help", "-h", "--version", "-v", "--new-window", "-n"):
+            continue
+        if a.startswith("-"):
+            continue
+        if a.startswith("+"):
+            parts = a[1:].split(":")
+            if parts and parts[0] and parts[0].isdigit():
+                continue
+        return True
+    return False
+
+
+def _decide_window_action(
+    *,
+    has_window: bool,
+    new_window: bool,
+    folder_explicit: bool,
+    has_files: bool,
+) -> str:
+    """Route an open request: "new" | "reuse" | "present".
+
+    Explicit folders always open a new window (that root's session is
+    restored there); files-only requests reuse the active window (the
+    thor-open single-file case included); bare invocations just present
+    the running window.
+    """
+    if not has_window or new_window:
+        return "new"
+    if folder_explicit:
+        return "new"
+    if has_files:
+        return "reuse"
+    return "present"
+
+
 if Gtk is not None:
     class ThorApplication(Gtk.Application):  # type: ignore[misc]
         __gtype_name__ = "ThorApplication"
@@ -134,6 +177,7 @@ if Gtk is not None:
                 flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.HANDLES_COMMAND_LINE,  # type: ignore[union-attr]
             )
             self._pending_folder: str | None = None
+            self._pending_folder_explicit: bool = False
             self._pending_files: list[str] = []
             self._pending_file_lines: dict[str, int] = {}
             self._pending_new_window: bool = False
@@ -222,21 +266,29 @@ if Gtk is not None:
             # re-entrant activate (e.g. open while opening) can't double-open.
             new_window = bool(getattr(self, "_pending_new_window", False))
             pending_folder = getattr(self, "_pending_folder", None)
+            pending_folder_explicit = bool(getattr(self, "_pending_folder_explicit", False))
             pending_files = list(getattr(self, "_pending_files", None) or [])
             pending_lines = dict(getattr(self, "_pending_file_lines", None) or {})
             self._pending_new_window = False
             self._pending_folder = None
+            self._pending_folder_explicit = False
             self._pending_files = []
             self._pending_file_lines = {}
             win = self.get_active_window()
-            if win is None or new_window:
+            action = _decide_window_action(
+                has_window=win is not None,
+                new_window=new_window,
+                folder_explicit=pending_folder_explicit and pending_folder is not None,
+                has_files=bool(pending_files),
+            )
+            if action == "new":
                 try:
                     win = self._create_window(pending_folder, pending_files, file_lines=pending_lines)
                 except Exception:
                     logger.exception("do_activate: create window failed")
                     return
-            else:
-                # Existing window: open pending files there (e.g. thor file:line while running)
+            elif action == "reuse":
+                # Existing window: open pending files there (e.g. thor-open file:line)
                 for fp in pending_files:
                     try:
                         loc = pending_lines.get(fp)
@@ -275,6 +327,7 @@ if Gtk is not None:
             new_window = bool(getattr(self, "_pending_new_window", False))
             self._pending_new_window = False
             self._pending_folder = None
+            self._pending_folder_explicit = False
             self._pending_files = []
             self._pending_file_lines = {}
             folder = None
@@ -299,7 +352,16 @@ if Gtk is not None:
                 else:
                     remote_files.append(f)
             win = self.get_active_window()
-            if win is None or new_window:
+            # A directory among the opened files is always an explicit folder
+            # action: it gets a new window (with that root's session). Live
+            # windows are never retargeted — files open as tabs instead.
+            action = _decide_window_action(
+                has_window=win is not None,
+                new_window=new_window,
+                folder_explicit=folder is not None,
+                has_files=bool(file_paths or remote_files),
+            )
+            if action == "new":
                 try:
                     win = self._create_window(folder, file_paths)
                 except Exception:
@@ -316,13 +378,6 @@ if Gtk is not None:
                 except Exception:
                     logger.debug("do_open: empty notebook guard failed", exc_info=True)
             else:
-                if folder is not None:
-                    try:
-                        from .project import attach as _attach_project
-
-                        _attach_project(win, initial_folder=folder)
-                    except Exception:
-                        logger.debug("do_open: project attach failed for %s", folder, exc_info=True)
                 for fp in file_paths:
                     try:
                         loc = Gio.File.new_for_path(fp)  # type: ignore[union-attr]
@@ -358,6 +413,7 @@ if Gtk is not None:
                     client_cwd = None
                 # argv[0] is program name
                 folder, files, file_lines = _resolve_initial_target_with_lines(argv, cwd=client_cwd)
+                folder_explicit = folder is not None and _argv_has_path_arg(argv)
                 new_window = "--new-window" in (argv or []) or "-n" in (argv or [])
                 try:
                     opts = cmd.get_options_dict()  # type: ignore[attr-defined]
@@ -369,8 +425,10 @@ if Gtk is not None:
             except Exception:
                 logger.debug("do_command_line: argv parse failed", exc_info=True)
                 folder, files, file_lines = _resolve_initial_target_with_lines(list(sys.argv))
+                folder_explicit = folder is not None and _argv_has_path_arg(list(sys.argv))
                 self._pending_new_window = "--new-window" in sys.argv or "-n" in sys.argv
             self._pending_folder = folder
+            self._pending_folder_explicit = folder_explicit
             self._pending_files = files
             self._pending_file_lines = file_lines
             try:
