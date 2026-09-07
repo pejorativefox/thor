@@ -112,6 +112,7 @@ via `./install.sh` to standard XDG directories:
 | `Alt+Enter` | Quick fix for the error at the cursor (C#) |
 | `Shift+Alt+F` | Format the file (C#) |
 | `Ctrl+F` / `F3` / `Shift+F3` | Find bar / next / previous |
+| `Ctrl+R` | Toggle word wrap (not in the terminal — that's reverse-search) |
 
 ## Something not working?
 

@@ -41,6 +41,7 @@ if Gtk is not None and GObject is not None:
 
             # Load persistent panel / window state
             self._panel_state = load_panel_state()
+            self._word_wrap = bool(self._panel_state.get("word_wrap", False))
             side_vis = bool(self._panel_state.get("side_panel_visible", True))
             bottom_vis = bool(self._panel_state.get("bottom_panel_visible", False))
             side_size = max(100, int(self._panel_state.get("side_panel_size", 260)))
@@ -452,6 +453,65 @@ if Gtk is not None and GObject is not None:
                 logger.debug("focus_active_editor failed", exc_info=True)
             return False
 
+        def toggle_word_wrap(self) -> bool:
+            """Flip the window-wide word-wrap setting; returns the new state.
+
+            Applies to every open editor view, persists to state.toml, and
+            is inherited by tabs created later via _add_tab.
+            """
+            new_state = not bool(getattr(self, "_word_wrap", False))
+            self._word_wrap = new_state
+            try:
+                self._panel_state["word_wrap"] = new_state
+            except Exception:
+                logger.debug("toggle_word_wrap: state store failed", exc_info=True)
+            self._apply_word_wrap()
+            try:
+                self._save_panel_state()
+            except Exception:
+                logger.debug("toggle_word_wrap: save failed", exc_info=True)
+            return new_state
+
+        def _apply_word_wrap(self) -> None:
+            """Apply the current word-wrap flag to all open editor views."""
+            if Gtk is None:
+                return
+            try:
+                mode = Gtk.WrapMode.WORD if getattr(self, "_word_wrap", False) else Gtk.WrapMode.NONE
+            except Exception:
+                logger.debug("_apply_word_wrap: mode resolve failed", exc_info=True)
+                return
+            for tab in list(getattr(self, "_tabs", None) or []):
+                try:
+                    view = tab.get_view()
+                    if view is not None and hasattr(view, "set_wrap_mode"):
+                        view.set_wrap_mode(mode)
+                except Exception:
+                    logger.debug("_apply_word_wrap: view failed", exc_info=True)
+                    continue
+
+        def _focus_in_terminal(self) -> bool:
+            """True when keyboard focus sits inside the embedded terminal.
+
+            Ctrl+R is readline reverse-search there and must not be stolen
+            by the window-level word-wrap toggle.
+            """
+            try:
+                panel = getattr(self, "_thor_terminal_panel", None)
+                if panel is None:
+                    return False
+                focus = self.get_focus() if hasattr(self, "get_focus") else None
+                ancestor = focus
+                for _ in range(8):
+                    if ancestor is None:
+                        break
+                    if ancestor is panel:
+                        return True
+                    ancestor = ancestor.get_parent() if hasattr(ancestor, "get_parent") else None
+            except Exception:
+                logger.debug("_focus_in_terminal probe failed", exc_info=True)
+            return False
+
         def _on_destroy(self, *_args) -> None:
             # Mark first so pending idle/timeout callbacks bail instead of
             # emitting on a dead window. Real teardown: project monitors,
@@ -759,6 +819,17 @@ if Gtk is not None and GObject is not None:
                     tab.get_document().set_style_scheme(pref)  # type: ignore[attr-defined]
             except Exception:
                 logger.debug("_add_tab: scheme failed", exc_info=True)
+            # New tabs inherit the window-wide word-wrap setting
+            try:
+                if Gtk is not None:
+                    view = tab.get_view()
+                    if view is not None and hasattr(view, "set_wrap_mode"):
+                        view.set_wrap_mode(
+                            Gtk.WrapMode.WORD if getattr(self, "_word_wrap", False)
+                            else Gtk.WrapMode.NONE
+                        )
+            except Exception:
+                logger.debug("_add_tab: wrap mode failed", exc_info=True)
             # Build notebook label with close button
             label_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
             lbl = Gtk.Label(label=title)
@@ -1230,6 +1301,19 @@ if Gtk is not None and GObject is not None:
                         self.close()
                     except Exception:
                         logger.debug("key press quit-close failed", exc_info=True)
+                    return True
+                # Window-level word-wrap toggle — but never steal the
+                # terminal's reverse-i-search.
+                if ctrl and not shift and keyname.lower() == "r":
+                    try:
+                        if self._focus_in_terminal():
+                            return False
+                    except Exception:
+                        logger.debug("key press terminal guard failed", exc_info=True)
+                    try:
+                        self.toggle_word_wrap()
+                    except Exception:
+                        logger.debug("key press wrap toggle failed", exc_info=True)
                     return True
             except Exception:
                 logger.debug("key press save failed", exc_info=True)

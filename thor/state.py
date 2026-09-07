@@ -35,6 +35,7 @@ DEFAULT_STATE = {
     "editor_font": "",
     "terminal_font": "",
     "panel_font": "",
+    "word_wrap": False,
 }
 
 

@@ -11,9 +11,10 @@ which sibling key handlers.
 Key ownership (window-level ``key-press-event`` handlers; first handler to
 return True wins, in connect order — see ``host.attach_builtin_plugins``):
 
-- window (``ThorWindow._on_key_press``): Ctrl+S/O/N (+Shift) and Ctrl+Q
+- window (``ThorWindow._on_key_press``): Ctrl+S/O/N (+Shift), Ctrl+Q
   (window close via the delete-event path — one process owns one window,
-  so this quits exactly this window).  Must never swallow the keys below.
+  so this quits exactly this window), and Ctrl+R (word-wrap toggle,
+  declined when the terminal has focus).  Must never swallow the keys below.
 - fuzzy: Ctrl+P.  palette: Ctrl+Shift+P.  find: Ctrl+F, Ctrl+G(+Shift), F3.
 - panel_hider: Ctrl+B/J/E.  terminal: Ctrl+Shift+T/W, Ctrl+` (+Shift+W is
   terminal close, not window close).
