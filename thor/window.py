@@ -241,7 +241,6 @@ if Gtk is not None and GObject is not None:
             self._css_provider = None
             self._save_state_timeout_id = None
             self._session_save_timeout_id = None
-            self._suspend_session_save = False
             self._destroyed = False
             self._saving_panel_state = False
 
@@ -364,8 +363,6 @@ if Gtk is not None and GObject is not None:
             try:
                 if getattr(self, "_destroyed", False):
                     return
-                if getattr(self, "_suspend_session_save", False):
-                    return
                 if GLib is None:
                     self._save_session_now()
                     return
@@ -399,8 +396,6 @@ if Gtk is not None and GObject is not None:
         def _save_session_now(self) -> None:
             """Synchronously persist open tabs for the current project root."""
             try:
-                if getattr(self, "_suspend_session_save", False):
-                    return
                 root = self._session_root()
                 if not root:
                     return
@@ -1211,13 +1206,14 @@ if Gtk is not None and GObject is not None:
                 if ctrl and not shift and keyname == "s":
                     self.save_active_tab(save_as=False)
                     return True
-                if ctrl and shift and keyname == "s":
+                if ctrl and shift and keyname.lower() == "s":
                     self.save_active_tab(save_as=True)
                     return True
                 if ctrl and not shift and keyname == "o":
                     self.prompt_open_file()
                     return True
-                if ctrl and shift and keyname == "o":
+                # lower(): with Shift held GDK reports "O"/"S" (uppercase).
+                if ctrl and shift and keyname.lower() == "o":
                     if hasattr(self._app, "_prompt_open_folder"):
                         self._app._prompt_open_folder()
                     return True

@@ -268,7 +268,6 @@ _GIT_RELEVANT_FILES = frozenset({"HEAD", "index", "packed-refs", "ORIG_HEAD", "F
 _GIT_NOISE_SUFFIXES = (".lock", ".tmp", ".swp", "~")
 
 from thor.util import is_save_completed, tab_state_name
-from ..keys import decode_key_event
 
 def _rel_within(path: str, base: str) -> str | None:
     """Relative path of `path` under `base`, or None when outside."""
@@ -547,7 +546,6 @@ if Gtk is not None:
     class ProjectBrowser(Gtk.Box):
         __gsignals__ = {
             "open-file": (GObject.SignalFlags.RUN_LAST, None, (GObject.TYPE_STRING,)),
-            "choose-root": (GObject.SignalFlags.RUN_LAST, None, ()),
         }
 
         def __init__(self) -> None:
@@ -1590,142 +1588,6 @@ def _open_in_thor(window, path: str) -> None:
     except Exception as e:
         logger.debug(f"open file failed for {path}: {e!r}")
 
-def _choose_root(window, browser) -> None:
-    if Gtk is None:
-        return
-    try:
-        dialog = Gtk.FileChooserDialog(
-            title="Open Folder",
-            transient_for=window,
-            action=Gtk.FileChooserAction.SELECT_FOLDER,
-        )
-        try:
-            dialog.set_transient_for(window)
-            dialog.set_modal(True)
-        except Exception:
-            logger.debug("folder chooser transient failed", exc_info=True)
-        dialog.add_buttons(
-            "_Cancel", Gtk.ResponseType.CANCEL,
-            "_Open", Gtk.ResponseType.ACCEPT,
-        )
-        try:
-            cur = getattr(browser, "_root_dir", None)
-            if cur and os.path.isdir(cur):
-                dialog.set_current_folder(cur)
-        except Exception:
-            logger.debug("folder chooser folder set failed", exc_info=True)
-    except Exception as e:
-        logger.debug(f"folder chooser create failed: {e!r}")
-        return
-    folder = None
-    try:
-        resp = dialog.run()
-        if resp == Gtk.ResponseType.ACCEPT:
-            try:
-                folder = dialog.get_filename()
-            except Exception:
-                try:
-                    folder = dialog.get_current_folder()
-                except Exception:
-                    folder = None
-    except Exception as e:
-        logger.debug(f"folder chooser failed: {e!r}")
-        folder = None
-    finally:
-        try:
-            dialog.destroy()
-        except Exception:
-            logger.debug("folder chooser destroy failed", exc_info=True)
-    if folder and os.path.isdir(folder):
-        try:
-            if is_unsafe_root(folder):
-                logger.debug(f"refusing unsafe root: {folder}")
-                return
-        except Exception:
-            return
-        # Save the outgoing root's session before switching so its tabs are
-        # not lost (dirty buffers are stashed, so no prompt is needed), then
-        # swap the workspace to the new root's saved session when one exists.
-        # With no saved session the current tabs are kept and continuous save
-        # associates them with the new root going forward.
-        try:
-            from . import session as _session
-
-            old_root = getattr(browser, "_root_dir", None)
-            if old_root and os.path.isdir(old_root):
-                try:
-                    if os.path.abspath(old_root) != os.path.abspath(folder):
-                        _session.save_for_root(old_root, window)
-                except Exception:
-                    logger.debug("session save on root switch failed", exc_info=True)
-        except Exception:
-            logger.debug("session pre-switch save failed", exc_info=True)
-        try:
-            browser.set_root(os.path.abspath(folder))
-        except Exception as e:
-            logger.debug(f"set_root failed for {folder}: {e!r}")
-            return
-        try:
-            from . import session as _session
-
-            new_root = os.path.abspath(folder)
-            if _session.load_for_root(new_root) is None:
-                saver = getattr(window, "_schedule_session_save", None)
-                if callable(saver):
-                    saver()
-                return
-            # Suspend continuous saves while swapping so a mid-swap save can't
-            # persist a half-closed workspace over the session being restored.
-            try:
-                window._suspend_session_save = True  # type: ignore[attr-defined]
-            except Exception:
-                logger.debug("session suspend flag failed", exc_info=True)
-            try:
-                try:
-                    closer = getattr(window, "close_all_tabs", None)
-                    if callable(closer):
-                        closer()
-                except Exception:
-                    logger.debug("session switch close failed", exc_info=True)
-                try:
-                    ok = bool(_session.restore_into_window(window, new_root))
-                except Exception:
-                    logger.debug("session switch restore failed", exc_info=True)
-                    ok = False
-                if not ok:
-                    try:
-                        creator = getattr(window, "create_tab", None)
-                        if callable(creator):
-                            creator(jump_to=True)
-                    except Exception:
-                        logger.debug("session switch empty tab failed", exc_info=True)
-            finally:
-                try:
-                    window._suspend_session_save = False  # type: ignore[attr-defined]
-                except Exception:
-                    logger.debug("session resume flag failed", exc_info=True)
-                try:
-                    saver = getattr(window, "_schedule_session_save", None)
-                    if callable(saver):
-                        saver()
-                except Exception:
-                    logger.debug("session schedule after switch failed", exc_info=True)
-        except Exception:
-            logger.debug("session switch failed", exc_info=True)
-
-def _project_key(window, event, browser) -> bool:
-    parts = decode_key_event(event)
-    if parts is None:
-        return False
-    keyname, ctrl, shift, alt = parts
-    if ctrl and shift and not alt and keyname.lower() == "o":
-        try:
-            _choose_root(window, browser)
-        except Exception:
-            logger.debug("project key check failed", exc_info=True)
-        return True
-    return False
-
 def _consume_pending() -> str | None:
     """Consume pending-root handoff, checking Thor cache locations."""
     candidates: list[str] = []
@@ -1761,8 +1623,10 @@ def attach(window, initial_folder: str | None = None) -> object | None:
     """Attach ProjectBrowser to a ThorWindow.
 
     Creates a ProjectBrowser, wires open-file to window.create_tab_from_location,
-    adds it to window.get_side_panel(), handles pending-root handoff,
-    and binds Ctrl+Shift+O to choose root. Returns the browser or None headless.
+    adds it to window.get_side_panel(), and handles the pending-root handoff.
+    Folder opens always go through the shared app-level dialog into a new
+    window — live windows are never retargeted. Returns the browser or None
+    headless.
     """
     if Gtk is None or window is None:
         return None
@@ -1785,11 +1649,6 @@ def attach(window, initial_folder: str | None = None) -> object | None:
         handlers.append((browser, hid))
     except Exception:
         logger.debug("browser open-file connect failed", exc_info=True)
-    try:
-        hid = browser.connect("choose-root", lambda _w: _choose_root(window, browser))
-        handlers.append((browser, hid))
-    except Exception:
-        logger.debug("browser choose-root connect failed", exc_info=True)
     try:
         side = window.get_side_panel()
     except Exception:
@@ -1818,11 +1677,6 @@ def attach(window, initial_folder: str | None = None) -> object | None:
         setattr(window, "_project_browser", browser)
     except Exception:
         logger.debug("project browser alias store failed", exc_info=True)
-    try:
-        hid = window.connect("key-press-event", lambda w, e: _project_key(w, e, browser))
-        handlers.append((window, hid))
-    except Exception:
-        logger.debug("window keys connect failed", exc_info=True)
     try:
         window._thor_project_handlers = handlers  # type: ignore[attr-defined]
     except Exception:

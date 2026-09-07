@@ -229,7 +229,7 @@ def test_collect_skips_empty_untitled():
 
 
 def test_switch_roots_swaps_tabs():
-    """Simulates _choose_root: save old, close all, restore new root."""
+    """Save old root, close all tabs, restore new root (root-switch sequence)."""
     with tempfile.TemporaryDirectory() as root_a, tempfile.TemporaryDirectory() as root_b, \
             tempfile.TemporaryDirectory() as cache:
         fa = _touch(os.path.join(root_a, "a.py"), "a")
