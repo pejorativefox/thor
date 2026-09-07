@@ -140,11 +140,11 @@ def main() -> int:
     except Exception:
         pass
 
-    # thor process
+    # thor processes (one per window; no shared state to reload)
     tprocs = _thor_processes()
     if tprocs:
         print(f"[info] Thor running: {', '.join(tprocs[:3])}")
-        print("       -> quit all Thor windows first to reload (single-instance Gtk.Application)")
+        print("       -> each window is its own process; plugins/settings load fresh per window")
 
     roslyn_log = os.path.join(ROSLYN_LOG_DIR, "roslyn-stderr.log")
     legacy_roslyn_log = os.path.expanduser("~/.cache/thor/thor-csharp/roslyn-logs/roslyn-stderr.log")

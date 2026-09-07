@@ -1,15 +1,14 @@
-"""Window routing policy: folders open new windows, files reuse (headless)."""
+"""Launch routing: one process per window, no in-process reuse (headless).
+
+Explicit folders are gated by the per-root lock in `thor.app.main`
+(second process for a live root is refused); file-only launches always
+spawn isolated processes. `_decide_window_action` remains as a
+deprecated pure helper (no longer consulted by the application).
+"""
 
 from __future__ import annotations
 
-from thor.app import _argv_has_path_arg, _decide_window_action
-
-
-def _decide(**kw):
-    base = {"has_window": True, "new_window": False,
-            "folder_explicit": False, "has_files": False}
-    base.update(kw)
-    return _decide_window_action(**base)
+from thor.app import _argv_has_path_arg
 
 
 def test_argv_has_path_arg():
@@ -24,24 +23,9 @@ def test_argv_has_path_arg():
     assert _argv_has_path_arg(["thor", "--new-window", "proj"]) is True
 
 
-def test_no_window_always_new():
-    assert _decide(has_window=False) == "new"
-    assert _decide(has_window=False, folder_explicit=True, has_files=True) == "new"
-
-
-def test_new_window_flag_wins():
-    assert _decide(new_window=True) == "new"
-    assert _decide(new_window=True, has_files=True) == "new"
-
-
-def test_explicit_folder_opens_new_window():
-    assert _decide(folder_explicit=True) == "new"
-    assert _decide(folder_explicit=True, has_files=True) == "new"
-
-
-def test_files_only_reuses_window():
-    assert _decide(has_files=True) == "reuse"
-
-
-def test_bare_invocation_presents():
-    assert _decide() == "present"
+def test_explicit_folder_gate_uses_lock():
+    # The same-root gate lives in thor.lock (covered by test_root_lock.py):
+    # an explicit folder arg is what triggers it. Bare invocations and
+    # file-only launches never take the gate.
+    assert _argv_has_path_arg(["thor", "."]) is True
+    assert _argv_has_path_arg(["thor"]) is False

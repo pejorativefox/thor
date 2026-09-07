@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import subprocess
 import sys
 
 logger = logging.getLogger(__name__)
@@ -151,12 +152,12 @@ def _decide_window_action(
     folder_explicit: bool,
     has_files: bool,
 ) -> str:
-    """Route an open request: "new" | "reuse" | "present".
+    """Deprecated routing helper (kept for backward compatibility).
 
-    Explicit folders always open a new window (that root's session is
-    restored there); files-only requests reuse the active window (the
-    thor-open single-file case included); bare invocations just present
-    the running window.
+    No longer consulted: each window is its own process (NON_UNIQUE), so
+    there is no in-process reuse/present. Explicit folders are gated by
+    the per-root lock in main(); file-only launches always spawn
+    isolated processes.
     """
     if not has_window or new_window:
         return "new"
@@ -172,18 +173,24 @@ if Gtk is not None:
         __gtype_name__ = "ThorApplication"
 
         def __init__(self) -> None:
+            # One process per window: NON_UNIQUE so every CLI spawns its
+            # own process instead of merging into a running primary via
+            # DBus. Each process owns exactly one ThorWindow.
             super().__init__(
                 application_id=APP_ID,
-                flags=Gio.ApplicationFlags.HANDLES_OPEN | Gio.ApplicationFlags.HANDLES_COMMAND_LINE,  # type: ignore[union-attr]
+                flags=(  # type: ignore[union-attr]
+                    Gio.ApplicationFlags.HANDLES_OPEN
+                    | Gio.ApplicationFlags.HANDLES_COMMAND_LINE
+                    | Gio.ApplicationFlags.NON_UNIQUE
+                ),
             )
             self._pending_folder: str | None = None
             self._pending_folder_explicit: bool = False
             self._pending_files: list[str] = []
             self._pending_file_lines: dict[str, int] = {}
             self._pending_new_window: bool = False
-            # Windows whose panel state was already saved (window_removed vs
-            # shutdown both save; saving twice is redundant I/O).
-            self._saved_panel_windows: set[int] = set()
+            # Per-root lock held for the process lifetime (set by main()).
+            self._root_lock = None
             # CLI option passthrough (best-effort; argv parsing doesn't depend on it)
             try:
                 self.add_main_option("new-window", ord("n"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Open in new window", None)  # type: ignore[attr-defined]
@@ -213,7 +220,10 @@ if Gtk is not None:
                 ("open_folder", lambda *_: self._prompt_open_folder()),
                 ("open_file", lambda *_: self._prompt_open_file()),
                 ("about", lambda *_: self._show_about()),
-                ("quit", lambda *_: self.quit()),
+                # Unified exit path: closing the active window runs the
+                # same delete-event prompt + saves as the WM close button.
+                # One process owns one window, so this quits the process.
+                ("quit", lambda *_: self.request_close_active_window()),
             ):
                 try:
                     act = Gio.SimpleAction.new(name, None)
@@ -229,44 +239,125 @@ if Gtk is not None:
             except Exception:
                 logger.debug("set_accels failed", exc_info=True)
 
-        def _save_panels_once(self, window) -> None:
+        def request_close_active_window(self) -> None:
+            """Close the active window via the WM-close path (with prompt).
+
+            Runs the same delete-event handler as the window-manager `X`
+            button, so Ctrl+Q and WM close can never diverge. One process
+            owns one window, so closing it quits the process.
+            """
             try:
-                key = id(window)
-                saved = getattr(self, "_saved_panel_windows", None)
-                if saved is not None:
-                    if key in saved:
-                        return
-                    saved.add(key)
+                win = self.get_active_window()
+            except Exception:
+                win = None
+            if win is None:
+                return
+            try:
+                win.close()
+            except Exception:
+                logger.debug("request_close_active_window failed", exc_info=True)
+
+        def _release_root_lock(self) -> None:
+            lock = getattr(self, "_root_lock", None)
+            self._root_lock = None
+            if lock is None:
+                return
+            try:
+                lock.release()
+            except Exception:
+                logger.debug("root lock release failed", exc_info=True)
+
+        def do_window_removed(self, window: Gtk.Window) -> None:  # type: ignore[override]
+            # Single-window process: save this window, then let GTK tear
+            # down. No fan-out over get_windows() — nothing is shared.
+            try:
                 if hasattr(window, "_save_panel_state"):
                     window._save_panel_state()
                 if hasattr(window, "_save_session_now"):
                     window._save_session_now()
             except Exception:
                 pass
-
-        def do_window_removed(self, window: Gtk.Window) -> None:  # type: ignore[override]
-            self._save_panels_once(window)
             try:
                 Gtk.Application.do_window_removed(self, window)
             except Exception:
                 pass
 
         def do_shutdown(self) -> None:  # type: ignore[override]
+            # Safety net for the single owned window (destroy already saves;
+            # this covers quit paths that skip destroy).
             try:
-                for win in self.get_windows():
-                    self._save_panels_once(win)
+                for win in list(self.get_windows()):
+                    try:
+                        if hasattr(win, "_save_panel_state"):
+                            win._save_panel_state()
+                        if hasattr(win, "_save_session_now"):
+                            win._save_session_now()
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            try:
+                self._release_root_lock()
             except Exception:
                 pass
             try:
                 Gtk.Application.do_shutdown(self)
             except Exception:
                 pass
+
+        @staticmethod
+        def _spawn_argv(extra_args: list[str]) -> list[str]:
+            """Argv for a detached child editor process."""
+            try:
+                pkg_dir = os.path.dirname(os.path.abspath(__file__))
+                repo_cli = os.path.join(os.path.dirname(pkg_dir), "thor-cli")
+                if os.path.isfile(repo_cli):
+                    return [sys.executable, repo_cli, *extra_args]
+            except Exception:
+                logger.debug("spawn argv repo probe failed", exc_info=True)
+            return ["thor", *extra_args]
+
+        def _spawn_new_process(self, extra_args: list[str]) -> None:
+            """Launch a fully isolated child editor process (no sharing)."""
+            argv = self._spawn_argv(list(extra_args or []))
+            try:
+                subprocess.Popen(
+                    argv,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            except Exception as e:
+                logger.warning("spawn new process failed: %r", e)
+
+        def _open_files_into_window(self, win, files: list[str], file_lines: dict | None = None) -> None:
+            """Open a file list into the single owned window."""
+            file_lines = file_lines or {}
+            for fp in files or []:
+                try:
+                    loc = file_lines.get(fp)
+                    if isinstance(loc, tuple):
+                        line, col = loc
+                    elif isinstance(loc, int):
+                        line, col = loc, None
+                    else:
+                        line, col = None, None
+                    line_pos = (line - 1) if line and line > 0 else -1
+                    col_pos = (col - 1) if col and col > 0 else -1
+                    win.open_file(fp, line_pos=line_pos, col_pos=col_pos, jump_to=True)
+                except Exception:
+                    logger.debug("_open_files_into_window: open %s failed", fp, exc_info=True)
+            try:
+                if win._notebook.get_n_pages() == 0:  # type: ignore[attr-defined]
+                    win.create_tab(jump_to=True)
+            except Exception:
+                logger.debug("_open_files_into_window: empty notebook guard failed", exc_info=True)
+
         def do_activate(self) -> None:  # type: ignore[override]
-            # Snapshot-then-clear: consume pending state up front so a
-            # re-entrant activate (e.g. open while opening) can't double-open.
-            new_window = bool(getattr(self, "_pending_new_window", False))
+            # One process owns one window: snapshot pending state, create
+            # the single window on first activation, present otherwise.
             pending_folder = getattr(self, "_pending_folder", None)
-            pending_folder_explicit = bool(getattr(self, "_pending_folder_explicit", False))
             pending_files = list(getattr(self, "_pending_files", None) or [])
             pending_lines = dict(getattr(self, "_pending_file_lines", None) or {})
             self._pending_new_window = False
@@ -274,41 +365,23 @@ if Gtk is not None:
             self._pending_folder_explicit = False
             self._pending_files = []
             self._pending_file_lines = {}
-            win = self.get_active_window()
-            action = _decide_window_action(
-                has_window=win is not None,
-                new_window=new_window,
-                folder_explicit=pending_folder_explicit and pending_folder is not None,
-                has_files=bool(pending_files),
-            )
-            if action == "new":
+            try:
+                existing = self.get_active_window()
+            except Exception:
+                existing = None
+            if existing is not None:
                 try:
-                    win = self._create_window(pending_folder, pending_files, file_lines=pending_lines)
+                    self._open_files_into_window(existing, pending_files, pending_lines)
+                    existing.present()
+                    if GLib is not None and hasattr(existing, "focus_active_editor"):
+                        GLib.idle_add(existing.focus_active_editor)
                 except Exception:
-                    logger.exception("do_activate: create window failed")
-                    return
-            elif action == "reuse":
-                # Existing window: open pending files there (e.g. thor-open file:line)
-                for fp in pending_files:
-                    try:
-                        loc = pending_lines.get(fp)
-                        if isinstance(loc, tuple):
-                            line, col = loc
-                        elif isinstance(loc, int):
-                            line, col = loc, None
-                        else:
-                            line, col = None, None
-                        line_pos = (line - 1) if line and line > 0 else -1
-                        col_pos = (col - 1) if col and col > 0 else -1
-                        win.open_file(fp, line_pos=line_pos, col_pos=col_pos, jump_to=True)
-                    except Exception:
-                        logger.debug("do_activate: open %s failed", fp, exc_info=True)
-                try:
-                    if win._notebook.get_n_pages() == 0:  # type: ignore[attr-defined]
-                        win.create_tab(jump_to=True)
-                except Exception:
-                    logger.debug("do_activate: empty notebook guard failed", exc_info=True)
-            if win is None:
+                    logger.debug("do_activate: present failed", exc_info=True)
+                return
+            try:
+                win = self._create_window(pending_folder, pending_files, file_lines=pending_lines)
+            except Exception:
+                logger.exception("do_activate: create window failed")
                 return
             try:
                 win.present()
@@ -318,13 +391,9 @@ if Gtk is not None:
                 logger.debug("do_activate: present failed", exc_info=True)
 
         def do_open(self, files, hint, data=None):  # type: ignore[override]
-            # Gio.File[] from DBus open (e.g. thor file.cs). Non-existent
-            # paths route to create=True; remote URIs (get_path() None)
-            # open via the Gio.File directly.
-            # Consume all command-line pending state: with HANDLES_OPEN the
-            # files arrive here, so stale pendings must not leak into the
-            # next do_activate.
-            new_window = bool(getattr(self, "_pending_new_window", False))
+            # Single-window process: Gio.Files from this process's own
+            # command line (NON_UNIQUE => no DBus forwarding from others).
+            # Remote URIs (get_path() None) open via the Gio.File directly.
             self._pending_new_window = False
             self._pending_folder = None
             self._pending_folder_explicit = False
@@ -351,46 +420,44 @@ if Gtk is not None:
                         file_paths.append(p)
                 else:
                     remote_files.append(f)
-            win = self.get_active_window()
-            # A directory among the opened files is always an explicit folder
-            # action: it gets a new window (with that root's session). Live
-            # windows are never retargeted — files open as tabs instead.
-            action = _decide_window_action(
-                has_window=win is not None,
-                new_window=new_window,
-                folder_explicit=folder is not None,
-                has_files=bool(file_paths or remote_files),
-            )
-            if action == "new":
-                try:
-                    win = self._create_window(folder, file_paths)
-                except Exception:
-                    logger.exception("do_open: create window failed")
-                    return
-                for f in remote_files:
-                    try:
-                        win.create_tab_from_location(f, create=True, jump_to=True)
-                    except Exception:
-                        logger.debug("do_open: remote open failed", exc_info=True)
-                try:
-                    if win._notebook.get_n_pages() == 0:  # type: ignore[attr-defined]
-                        win.create_tab(jump_to=True)
-                except Exception:
-                    logger.debug("do_open: empty notebook guard failed", exc_info=True)
-            else:
+            try:
+                existing = self.get_active_window()
+            except Exception:
+                existing = None
+            if existing is not None:
                 for fp in file_paths:
                     try:
                         loc = Gio.File.new_for_path(fp)  # type: ignore[union-attr]
-                        win.create_tab_from_location(loc, create=True, jump_to=True)
+                        existing.create_tab_from_location(loc, create=True, jump_to=True)
                     except Exception:
                         logger.debug("do_open: open %s failed", fp, exc_info=True)
                 for f in remote_files:
                     try:
-                        win.create_tab_from_location(f, create=True, jump_to=True)
+                        existing.create_tab_from_location(f, create=True, jump_to=True)
                     except Exception:
                         logger.debug("do_open: remote open failed", exc_info=True)
-            if win is None:
+                try:
+                    existing.present()
+                    if GLib is not None and hasattr(existing, "focus_active_editor"):
+                        GLib.idle_add(existing.focus_active_editor)
+                except Exception:
+                    logger.debug("do_open: present failed", exc_info=True)
                 return
+            try:
+                win = self._create_window(folder, file_paths)
+            except Exception:
+                logger.exception("do_open: create window failed")
+                return
+            for f in remote_files:
+                try:
+                    win.create_tab_from_location(f, create=True, jump_to=True)
+                except Exception:
+                    logger.debug("do_open: remote open failed", exc_info=True)
+            try:
+                if win._notebook.get_n_pages() == 0:  # type: ignore[attr-defined]
+                    win.create_tab(jump_to=True)
+            except Exception:
+                logger.debug("do_open: empty notebook guard failed", exc_info=True)
             try:
                 win.present()
                 if GLib is not None and hasattr(win, "focus_active_editor"):
@@ -452,8 +519,8 @@ if Gtk is not None:
                 logger.exception("_create_window: ThorWindow construction failed")
                 raise
             file_lines = file_lines or {}
-            # Bake built-in panels/plugins first so the project root (including
-            # the thor-code pending-root handoff) resolves before restore.
+            # Bake built-in panels/plugins first so the project root
+            # resolves before restore.
             try:
                 from .host import attach_builtin_plugins
 
@@ -461,6 +528,8 @@ if Gtk is not None:
             except Exception as e:
                 logger.exception("plugin attach failed: %r", e)
             # Restore per-project session, merging explicit files on top.
+            # Single-window process: no flush of other windows, nothing is
+            # shared in memory.
             try:
                 from .project import session as _session
 
@@ -497,15 +566,14 @@ if Gtk is not None:
             return win
 
         def _new_window(self) -> None:
+            # Isolated process: a second window is a second process, never
+            # a second ThorWindow in this one. --new-window bypasses the
+            # same-root lock gate in main().
             try:
-                w = self._create_window(None, [])
+                self._spawn_new_process(["--new-window"])
             except Exception:
-                logger.exception("_new_window: create window failed")
+                logger.exception("_new_window: spawn failed")
                 return
-            try:
-                w.present()
-            except Exception:
-                logger.debug("_new_window: present failed", exc_info=True)
 
         def _prompt_open_folder(self) -> None:
             win = self.get_active_window()
@@ -528,16 +596,13 @@ if Gtk is not None:
                         logger.debug("open folder dialog filename failed", exc_info=True)
                         folder = None
                     if folder and os.path.isdir(folder):
+                        # Isolated process: hand the folder to a fresh
+                        # process. That child enforces the same-root lock
+                        # gate in main() and refuses duplicates itself.
                         try:
-                            w = self._create_window(folder, [])
+                            self._spawn_new_process([folder])
                         except Exception:
-                            logger.exception("open folder: create window failed")
-                            w = None
-                        if w is not None:
-                            try:
-                                w.present()
-                            except Exception:
-                                logger.debug("open folder: present failed", exc_info=True)
+                            logger.exception("open folder: spawn failed")
             except Exception as e:
                 logger.warning("open folder dialog failed: %r", e)
             finally:
@@ -648,10 +713,49 @@ def main(argv: list[str] | None = None) -> int:
     if Gtk is None or Gio is None:
         logger.error("Thor: GTK not available (headless).")
         return 1
+    # One process per window: refuse a second process for an explicitly
+    # requested folder that is already live (per-root flock gate).
+    # --new-window bypasses the gate; default-cwd and file-only launches
+    # never take the gate (thor-open always spawns isolated processes).
+    root_lock = None
+    try:
+        folder, _files = _resolve_initial_target(argv, cwd=os.getcwd())
+        folder_explicit = folder is not None and _argv_has_path_arg(argv)
+        forced = "--new-window" in argv or "-n" in argv
+        if folder_explicit and not forced and folder and os.path.isdir(folder):
+            from .lock import try_acquire_root_lock
+
+            lock, owner_pid = try_acquire_root_lock(folder)
+            if lock is None:
+                if owner_pid is not None:
+                    print(
+                        f"thor: {folder} is already open (pid {owner_pid}); refusing second window",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"thor: {folder} is already open; refusing second window",
+                        file=sys.stderr,
+                    )
+                return 2
+            root_lock = lock
+    except Exception:
+        logger.debug("root lock gate failed (fail-open)", exc_info=True)
+        root_lock = None
     app = ThorApplication()
+    try:
+        app._root_lock = root_lock
+    except Exception:
+        pass
     # Gtk.Application.run expects argv
     try:
         return app.run(argv)  # type: ignore[attr-defined]
     except Exception as e:
         logger.exception("run failed: %r", e)
         return 1
+    finally:
+        try:
+            if root_lock is not None:
+                root_lock.release()
+        except Exception:
+            pass

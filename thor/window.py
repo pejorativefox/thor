@@ -1220,6 +1220,17 @@ if Gtk is not None and GObject is not None:
                 if ctrl and not shift and keyname == "n":
                     self.create_tab(jump_to=True)
                     return True
+                # Unified exit path: Ctrl+Q closes this window via the same
+                # delete-event handler as the WM close button (unsaved
+                # prompt + saves). Each window is its own process, so this
+                # quits exactly this window — never a sibling. Explicit
+                # fallback: VTE/terminal focus can swallow the app accel.
+                if ctrl and not shift and keyname.lower() == "q":
+                    try:
+                        self.close()
+                    except Exception:
+                        logger.debug("key press quit-close failed", exc_info=True)
+                    return True
             except Exception:
                 logger.debug("key press save failed", exc_info=True)
             # Let plugins / window handle other shortcuts; keep default propagation

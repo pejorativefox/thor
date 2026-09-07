@@ -71,11 +71,11 @@ def _pick_icon(candidates: tuple[str, ...]) -> str:
                 continue
     return candidates[0]
 
-#: One-shot handoff written by the `thor-code` launcher: the folder thor-code
-#: was pointed at. Read once per window activation, then consumed (deleted),
-#: so it acts as launch intent — not as persisted state. Lives under the
-#: user cache dir because thor is single-instance: cwd/env of a `thor-code`
-#: invocation never reach an already-running thor process.
+#: Legacy one-shot handoff once written by the `thor-code` launcher.
+#: No longer used: each window is its own process and receives its folder
+#: straight from its own argv. The read/write helpers below remain for
+#: backward compatibility (and their tests) but are not consulted at
+#: startup.
 PENDING_FILENAME = "pending-root"
 PENDING_MAX_AGE_S = 60
 
@@ -1623,10 +1623,9 @@ def attach(window, initial_folder: str | None = None) -> object | None:
     """Attach ProjectBrowser to a ThorWindow.
 
     Creates a ProjectBrowser, wires open-file to window.create_tab_from_location,
-    adds it to window.get_side_panel(), and handles the pending-root handoff.
-    Folder opens always go through the shared app-level dialog into a new
-    window — live windows are never retargeted. Returns the browser or None
-    headless.
+    adds it to window.get_side_panel(), and loads the given initial folder.
+    Each window is its own process, so there is no pending-root handoff and
+    no cross-window retargeting. Returns the browser or None headless.
     """
     if Gtk is None or window is None:
         return None
@@ -1690,14 +1689,10 @@ def attach(window, initial_folder: str | None = None) -> object | None:
         _session.attach_window_session(window)
     except Exception:
         logger.debug("session attach failed", exc_info=True)
+    # Isolated processes: the folder comes straight from this process's
+    # own argv (initial_folder). The legacy pending-root handoff file is
+    # no longer written or consumed.
     folder_to_load: str | None = initial_folder
-    if folder_to_load is None:
-        try:
-            pending = _consume_pending()
-            if pending and os.path.isdir(pending):
-                folder_to_load = pending
-        except Exception:
-            logger.debug("pending handoff consume failed", exc_info=True)
     if folder_to_load and os.path.isdir(folder_to_load):
         try:
             if not is_unsafe_root(folder_to_load):

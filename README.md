@@ -73,7 +73,7 @@ Launch:
 
 ```bash
 thor [folder|file ...]           # like `thor .`
-thor-code [folder]               # `code .` equivalent (writes pending-root handoff)
+thor-code [folder]               # `code .` equivalent (own process per window)
 thor-open 'file.cs:line:col'     # open at location
 THOR_DEBUG=1 thor                # verbose [thor:*] traces + marker log
 ```
@@ -124,10 +124,12 @@ python3 doctor.py --help   # filtered
 
 The usual culprits:
 
-1. **Editor was still running.** Thor is single-instance
-   `GApplication` — a new `thor` command just talks to the old
-   process and new plugins/settings never load. Always use File → Quit all
-   windows first, then start fresh.
+1. **Windows are isolated processes.** Every window is its own
+   process (`NON_UNIQUE` application, one window each). A second
+   `thor-code <path>` for an already-open folder is refused (per-root
+   lock); `thor-open` always spawns a fresh process. `Ctrl+Q` and the
+   window-manager close run the same per-window exit path, so one quit
+   can never take down a sibling window.
 2. **Panes are hidden.** New panels live in the side/bottom panes; turn
    them on via View → Side Pane / Bottom Pane (or `Ctrl+B` / `Ctrl+E` / `Ctrl+J`).
 3. **C# completions missing.** Make sure the dotnet SDK and

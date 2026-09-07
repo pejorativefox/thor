@@ -26,9 +26,10 @@ Issues = "https://github.com/thor-editor/thor/issues"
 
 [project.scripts]
 thor = "thor.app:main"
-# thor-code / thor-open remain as standalone scripts (thor-code, thor-open) with
-# pending-root handoff logic; they are installed to ~/.local/bin via ./install.sh.
-# Mapping them to thor.app:main as console_scripts would bypass that handoff,
+# thor-code / thor-open remain as standalone scripts (thor-code, thor-open);
+# they are installed to ~/.local/bin via ./install.sh. Each window is its
+# own process, so launchers just spawn `thor` with the target path.
+# Mapping them to thor.app:main as console_scripts would bypass that,
 # so only `thor` is exposed as a console_script.
 
 [project.optional-dependencies]

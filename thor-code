@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """thor-code — open a folder in Thor (code . equivalent).
 
-Writes to Thor's pending-root handoff.
+Each window is its own process: this only spawns `thor <folder>`.
+The child enforces the same-root lock gate itself and refuses a
+second window for an already-live root.
 """
 
 from __future__ import annotations
@@ -13,34 +15,6 @@ import sys
 USAGE = "usage: thor-code [folder]"
 
 VERSION = "0.1.0"
-
-def _pending_path() -> str:
-    try:
-        from thor import xdg
-        return xdg.pending_root_path()
-    except Exception:
-        pass
-    # Fallback if thor package is not in python path
-    env = os.environ.get("XDG_CACHE_HOME", "").strip()
-    if env:
-        return os.path.join(os.path.abspath(env), "thor", "project-mode", "pending-root")
-    try:
-        import gi  # type: ignore
-
-        gi.require_version("Gtk", "3.0")  # type: ignore[attr-defined]
-        from gi.repository import GLib  # type: ignore
-
-        if GLib is not None:
-            try:
-                base = GLib.get_user_cache_dir()  # type: ignore[union-attr]
-                if base:
-                    return os.path.join(base, "thor", "project-mode", "pending-root")
-            except Exception:
-                pass
-    except Exception:
-        pass
-    base = os.path.join(os.path.expanduser("~"), ".cache")
-    return os.path.join(base, "thor", "project-mode", "pending-root")
 
 def resolve_target(argv: list[str]) -> str | None:
     args = [a for a in argv[1:] if a not in ("--new-window", "-n")]
@@ -55,21 +29,8 @@ def launch(target: str) -> int:
     if not os.path.isdir(target):
         print(f"thor-code: not a folder: {target}", file=sys.stderr)
         return 2
-    pending = _pending_path()
-    try:
-        os.makedirs(os.path.dirname(pending), exist_ok=True)
-        # Atomic, last-writer-wins: concurrent thor-code invocations each
-        # write a complete tmp file then os.replace() it, so readers never
-        # see a partial path. No locking; the last replace wins by design.
-        tmp = f"{pending}.tmp-{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(target + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, pending)
-    except OSError as exc:
-        print(f"thor-code: failed to record folder: {exc}", file=sys.stderr)
-        return 1
+    # Isolated processes: no pending-root handoff file anymore. Just
+    # launch thor; the child takes the same-root lock or refuses.
     # Launch thor (this process's thor-cli or installed thor)
     thor_bin = os.path.join(os.path.dirname(__file__), "thor-cli")
     if not os.path.isfile(thor_bin):
