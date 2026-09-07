@@ -1,15 +1,12 @@
-"""project-mode git monitor filtering (headless)."""
+"""Project browser git monitor filtering (headless)."""
 
 import os
-import sys
 import tempfile
 import types
 
 import pytest
 
-
 import thor.project as projectmode
-IS_THOR = True  # thor standalone, skip plugin UI tests
 
 
 def test_git_noise_ignored():
@@ -42,8 +39,6 @@ def test_tree_rebuild_on_delete():
 
 
 def test_collect_watch_dirs_prunes():
-    if not hasattr(projectmode, "ProjectModePlugin"):
-        import pytest; pytest.skip("ProjectModePlugin not available in thor")
     with tempfile.TemporaryDirectory() as tmp:
         os.makedirs(os.path.join(tmp, "src", "sub"))
         os.makedirs(os.path.join(tmp, ".git"))
@@ -58,8 +53,6 @@ def test_collect_watch_dirs_prunes():
 
 
 def test_git_event_paths_headless():
-    if not hasattr(projectmode, "ProjectModePlugin"):
-        import pytest; pytest.skip("ProjectModePlugin not available in thor")
     class Fake:
         def __init__(self, p):
             self._p = p
@@ -69,27 +62,6 @@ def test_git_event_paths_headless():
 
     assert projectmode.git_event_paths(Fake("/a"), Fake("/b")) == ("/a", "/b")
     assert projectmode.git_event_paths(None, None) == (None, None)
-
-
-def test_set_root_refuses_unsafe():
-    if not hasattr(projectmode, "ProjectModePlugin"):
-        import pytest; pytest.skip("ProjectModePlugin not available in thor")
-    cls = projectmode.ProjectModePlugin
-    ns = types.SimpleNamespace(_root_dir=None)
-    called = []
-    ns.browser = types.SimpleNamespace(set_root=lambda path: called.append(path))
-    ns._set_root = types.MethodType(cls._set_root, ns)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        ns._set_root(tmp)
-        assert called, "safe tmp root must still load"
-
-    home = os.path.expanduser("~")
-    ns._root_dir = None
-    called.clear()
-    ns._set_root(home)
-    assert called == [], "unsafe $HOME root must be refused"
-    assert ns._root_dir is None
 
 
 def test_working_tree_refresh_bypasses_storm_gate():
@@ -161,111 +133,6 @@ def test_git_timer_preserves_interval_through_fire():
         projectmode.GLib = saved_glib
 
 
-class _FakeSaveTab:
-    """Hashable Thor-tab stand-in with a document location."""
-
-    def __init__(self, state, path):
-        self._state = state
-        self._path = path
-
-    def get_state(self):
-        return self._state
-
-    def get_document(self):
-        path = self._path
-
-        class _Loc:
-            def get_path(self):
-                return path
-
-        class _Doc:
-            def get_location(self):
-                return _Loc()
-
-        return _Doc()
-
-
-def _save_plugin(tmp, git_calls, tree_calls):
-    browser = types.SimpleNamespace(
-        _root_dir=tmp,
-        _git_generation=3,
-        _tree_generation=7,
-        _arm_git_timer=lambda ms, gen, interval=None: git_calls.append((ms, gen, interval)),
-        _arm_tree_timer=lambda ms, gen: tree_calls.append((ms, gen)),
-    )
-    plugin = projectmode.ProjectModePlugin.__new__(projectmode.ProjectModePlugin)
-    plugin.browser = browser
-    plugin._root_dir = None
-    plugin._tab_states = {}
-    plugin._tab_signal_ids = []
-    return plugin
-
-
-def test_save_completion_arms_git_refresh_without_storm_gate():
-    if IS_THOR:
-        import pytest; pytest.skip("plugin UI test not applicable for thor")
-    with tempfile.TemporaryDirectory() as tmp:
-        target = os.path.join(tmp, "a.txt")
-        with open(target, "w") as f:
-            f.write("x")
-        git_calls, tree_calls = [], []
-        plugin = _save_plugin(tmp, git_calls, tree_calls)
-        window = types.SimpleNamespace()
-        tab = _FakeSaveTab("THOR_TAB_STATE_SAVING", target)
-        plugin._tab_states[hash(tab)] = "THOR_TAB_STATE_SAVING"
-        tab._state = "THOR_TAB_STATE_NORMAL"
-        plugin._on_project_tab_state_changed(window, tab)
-        assert git_calls == [(projectmode.GIT_DIR_DEBOUNCE_MS, 3, 0.0)]
-        assert tree_calls == [(projectmode.TREE_REFRESH_DEBOUNCE_MS, 7)]
-
-
-def test_non_save_state_change_arms_nothing():
-    if IS_THOR:
-        import pytest; pytest.skip("plugin UI test not applicable for thor")
-    with tempfile.TemporaryDirectory() as tmp:
-        target = os.path.join(tmp, "a.txt")
-        with open(target, "w") as f:
-            f.write("x")
-        git_calls, tree_calls = [], []
-        plugin = _save_plugin(tmp, git_calls, tree_calls)
-        window = types.SimpleNamespace()
-        # NORMAL -> NORMAL: typing/navigation noise, not a save.
-        tab = _FakeSaveTab("THOR_TAB_STATE_NORMAL", target)
-        plugin._tab_states[hash(tab)] = "THOR_TAB_STATE_NORMAL"
-        tab._state = "THOR_TAB_STATE_NORMAL"
-        plugin._on_project_tab_state_changed(window, tab)
-        # Untitled buffer completing a "save" with no on-disk path.
-        ghost = _FakeSaveTab("THOR_TAB_STATE_SAVING", None)
-        plugin._tab_states[hash(ghost)] = "THOR_TAB_STATE_SAVING"
-        ghost._state = "THOR_TAB_STATE_NORMAL"
-        plugin._on_project_tab_state_changed(window, ghost)
-        # Save outside the project root must not refresh this browser.
-        foreign = _FakeSaveTab("THOR_TAB_STATE_SAVING", os.path.join(tempfile.gettempdir(), "x.txt"))
-        plugin._tab_states[hash(foreign)] = "THOR_TAB_STATE_SAVING"
-        foreign._state = "THOR_TAB_STATE_NORMAL"
-        plugin._on_project_tab_state_changed(window, foreign)
-        assert git_calls == []
-        assert tree_calls == []
-
-
-def test_tab_added_removed_track_state():
-    if IS_THOR:
-        import pytest; pytest.skip("plugin UI test not applicable for thor")
-    with tempfile.TemporaryDirectory() as tmp:
-        target = os.path.join(tmp, "a.txt")
-        with open(target, "w") as f:
-            f.write("x")
-        git_calls, tree_calls = [], []
-        plugin = _save_plugin(tmp, git_calls, tree_calls)
-        window = types.SimpleNamespace()
-        tab = _FakeSaveTab("THOR_TAB_STATE_NORMAL", target)
-        plugin._on_project_tab_added(window, tab)
-        assert plugin._tab_states.get(hash(tab)) == "THOR_TAB_STATE_NORMAL"
-        assert git_calls and tree_calls  # save-as / opened file under root
-        plugin._on_project_tab_removed(window, tab)
-        assert hash(tab) not in plugin._tab_states
-
-
 def test_git_monitor_target_resolves_repo_root():
     import shutil
     import subprocess
@@ -323,30 +190,6 @@ def test_is_save_completed_transitions():
     assert projectmode.is_save_completed(FAKE_NORMAL, FAKE_NORMAL) is False
     assert projectmode.is_save_completed(FAKE_SAVING_ERROR, FAKE_NORMAL) is False
     assert projectmode.is_save_completed("", FAKE_NORMAL) is False
-
-
-def test_save_with_gi_enum_state_arms_refresh():
-    if IS_THOR:
-        import pytest; pytest.skip("plugin UI test not applicable for thor")
-    """End-to-end: handler sees GI enums (not test strings) on save."""
-    with tempfile.TemporaryDirectory() as tmp:
-        target = os.path.join(tmp, "a.txt")
-        with open(target, "w") as f:
-            f.write("x")
-        git_calls, tree_calls = [], []
-        plugin = _save_plugin(tmp, git_calls, tree_calls)
-        window = types.SimpleNamespace()
-
-        class _EnumTab(_FakeSaveTab):
-            def get_state(self):
-                return self._state
-
-        tab = _EnumTab(FAKE_SAVING, target)
-        plugin._tab_states[hash(tab)] = projectmode.tab_state_name(FAKE_SAVING)
-        tab._state = FAKE_NORMAL
-        plugin._on_project_tab_state_changed(window, tab)
-        assert git_calls == [(projectmode.GIT_DIR_DEBOUNCE_MS, 3, 0.0)]
-        assert tree_calls == [(projectmode.TREE_REFRESH_DEBOUNCE_MS, 7)]
 
 
 def test_git_event_filter_resolves_subdir_root():

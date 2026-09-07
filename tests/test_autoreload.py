@@ -1,4 +1,4 @@
-"""Unit tests for the autoreload plugin (headless, no GTK)."""
+"""Unit tests for autoreload (headless, no GTK)."""
 
 import os
 import sys
@@ -226,13 +226,13 @@ FakeGtkSource = types.SimpleNamespace(
 )
 
 
-def _plugin():
-    plugin = ar.AutoReloadManager.__new__(ar.AutoReloadManager)
-    plugin._signal_ids = []
-    plugin._monitors = {}
-    plugin._pending = {}
-    plugin._loading = set()
-    return plugin
+def _mgr():
+    mgr = ar.AutoReloadManager.__new__(ar.AutoReloadManager)
+    mgr._signal_ids = []
+    mgr._monitors = {}
+    mgr._pending = {}
+    mgr._loading = set()
+    return mgr
 
 
 def _patched_module(**overrides):
@@ -269,9 +269,9 @@ def test_maybe_reload_clean_externally_modified_tab():
             _write(path, "on disk")
             doc = FakeDoc(modified=False, location=path, line=41, text="buffer")
             window = FakeWindow(docs=[doc])
-            plugin = _plugin()
+            mgr = _mgr()
             tab = FakeTab(doc, state=13)
-            assert plugin._maybe_reload(tab, window) is True
+            assert mgr._maybe_reload(tab, window) is True
             assert len(FakeLoader.created) == 1
             loader = FakeLoader.created[0]
             assert loader.buffer is doc
@@ -294,8 +294,8 @@ def test_reload_uses_new_source_file_when_doc_has_none():
             doc = FakeDoc(modified=False, location=path, text="buffer",
                           source_file=AttributeError("no file"))
             window = FakeWindow(docs=[doc])
-            plugin = _plugin()
-            assert plugin._check_and_reload(window, doc, "test") is True
+            mgr = _mgr()
+            assert mgr._check_and_reload(window, doc, "test") is True
             assert len(FakeLoader.created) == 1
             assert FakeLoader.created[0].gfile.location.get_path() == path
     finally:
@@ -311,9 +311,9 @@ def test_reload_skips_second_load_while_in_flight():
             _write(path, "on disk")
             doc = FakeDoc(modified=False, location=path, text="buffer")
             window = FakeWindow(docs=[doc])
-            plugin = _plugin()
-            assert plugin._check_and_reload(window, doc, "test") is True
-            assert plugin._check_and_reload(window, doc, "test") is False
+            mgr = _mgr()
+            assert mgr._check_and_reload(window, doc, "test") is True
+            assert mgr._check_and_reload(window, doc, "test") is False
             assert len(FakeLoader.created) == 1
     finally:
         _restore_module(saved)
@@ -328,58 +328,58 @@ def test_reload_failure_restores_cursor_and_clears_loading():
             _write(path, "on disk")
             doc = FakeDoc(modified=False, location=path, text="buffer")
             window = FakeWindow(docs=[doc])
-            plugin = _plugin()
-            assert plugin._check_and_reload(window, doc, "test") is True
+            mgr = _mgr()
+            assert mgr._check_and_reload(window, doc, "test") is True
             loader = FakeLoader.created[0]
             loader.finish_result = False
             callback, _ud = loader.async_calls[0]
             callback(loader, object(), None)
             assert doc.placed_cursor == []
-            assert plugin._loading == set()
+            assert mgr._loading == set()
     finally:
         _restore_module(saved)
 
 
 def test_maybe_reload_skips_modified_doc():
-    plugin = _plugin()
+    mgr = _mgr()
     tab = FakeTab(FakeDoc(modified=True), state=13)
-    assert plugin._maybe_reload(tab, FakeWindow()) is False
+    assert mgr._maybe_reload(tab, FakeWindow()) is False
 
 
 def test_maybe_reload_ignores_normal_state():
-    plugin = _plugin()
+    mgr = _mgr()
     tab = FakeTab(FakeDoc(modified=False), state=0)
-    assert plugin._maybe_reload(tab, FakeWindow()) is False
+    assert mgr._maybe_reload(tab, FakeWindow()) is False
 
 
 def test_state_changed_handler_finds_tab_in_args():
     window = FakeWindow()
-    plugin = _plugin()
+    mgr = _mgr()
     seen = []
-    plugin._maybe_reload = lambda tab, w: seen.append((tab, w)) or True  # type: ignore[method-assign]
+    mgr._maybe_reload = lambda tab, w: seen.append((tab, w)) or True  # type: ignore[method-assign]
     tab = FakeTab(FakeDoc(), state=13)
-    plugin._on_tab_state_changed(window, tab)
+    mgr._on_tab_state_changed(window, tab)
     assert seen == [(tab, window)]
 
 
 def test_sweep_reloads_externally_modified_docs():
     doc = FakeDoc(modified=False)
     window = FakeWindow(docs=[doc])
-    plugin = _plugin()
+    mgr = _mgr()
     seen = []
-    plugin._maybe_reload = lambda tab, w: seen.append(w) or False  # type: ignore[method-assign]
-    plugin._sweep(window)
+    mgr._maybe_reload = lambda tab, w: seen.append(w) or False  # type: ignore[method-assign]
+    mgr._sweep(window)
     assert seen == [window]
 
 
 def test_attach_detach_wires_signals():
     window = FakeWindow()
-    plugin = _plugin()
-    plugin._attach(window)
+    mgr = _mgr()
+    mgr._attach(window)
     assert set(window.connected) == {
         "tab-added", "tab-removed", "active-tab-changed", "active-tab-state-changed",
     }, window.connected
-    plugin._detach()
+    mgr._detach()
     assert sorted(window.disconnected) == [1, 2, 3, 4]
 
 
@@ -405,15 +405,15 @@ def test_check_and_reload_only_when_content_differs():
             path = os.path.join(tmp, "B.cs")
             _write(path, "on disk")
             window = FakeWindow()
-            plugin = _plugin()
+            mgr = _mgr()
             changed = FakeDoc(modified=False, location=path, text="old buffer")
-            assert plugin._check_and_reload(window, changed, "test") is True
+            assert mgr._check_and_reload(window, changed, "test") is True
             assert len(FakeLoader.created) == 1
             same = FakeDoc(modified=False, location=path, text="on disk")
-            assert plugin._check_and_reload(window, same, "test") is False
+            assert mgr._check_and_reload(window, same, "test") is False
             assert len(FakeLoader.created) == 1
             dirty = FakeDoc(modified=True, location=path, text="old buffer")
-            assert plugin._check_and_reload(window, dirty, "test") is False
+            assert mgr._check_and_reload(window, dirty, "test") is False
             assert len(FakeLoader.created) == 1
     finally:
         _restore_module(saved)
@@ -424,9 +424,9 @@ def test_check_and_reload_skips_deleted_file():
     FakeLoader.reset()
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            plugin = _plugin()
+            mgr = _mgr()
             doc = FakeDoc(modified=False, location=os.path.join(tmp, "Gone.cs"), text="x")
-            assert plugin._check_and_reload(FakeWindow(), doc, "test") is False
+            assert mgr._check_and_reload(FakeWindow(), doc, "test") is False
             assert FakeLoader.created == []
     finally:
         _restore_module(saved)
@@ -441,15 +441,15 @@ def test_file_event_debounces_and_fires():
             _write(path, "disk v2")
             doc = FakeDoc(modified=False, location=path, text="buffer v1")
             window = FakeWindow(docs=[doc])
-            plugin = _plugin()
-            plugin._monitors[path] = (FakeMonitor(), 7)
-            plugin._on_file_event(None, None, None, 1, window, path)
-            plugin._on_file_event(None, None, None, 0, window, path)
+            mgr = _mgr()
+            mgr._monitors[path] = (FakeMonitor(), 7)
+            mgr._on_file_event(None, None, None, 1, window, path)
+            mgr._on_file_event(None, None, None, 0, window, path)
             assert len(glib.timers) == 1
             assert glib.removed, "first timer must be cancelled"
             fires = []
-            real_check = plugin._check_and_reload
-            plugin._check_and_reload = lambda w, d, reason: fires.append(reason) or True  # type: ignore[method-assign]
+            real_check = mgr._check_and_reload
+            mgr._check_and_reload = lambda w, d, reason: fires.append(reason) or True  # type: ignore[method-assign]
             [(callback, args)] = list(glib.timers.values())
             callback(*args)
             assert fires == ["file changed on disk"]
@@ -462,19 +462,19 @@ def test_file_event_ignores_unwatched_codes():
     glib = FakeGLib()
     saved = _patched_module(GLib=glib)
     try:
-        plugin = _plugin()
-        plugin._on_file_event(None, None, None, 2, FakeWindow(), "/tmp/X.cs")
+        mgr = _mgr()
+        mgr._on_file_event(None, None, None, 2, FakeWindow(), "/tmp/X.cs")
         assert glib.timers == {}
     finally:
         _restore_module(saved)
 
 
 def test_fire_unwatches_closed_doc():
-    plugin = _plugin()
+    mgr = _mgr()
     monitor = FakeMonitor()
-    plugin._monitors["/tmp/Closed.cs"] = (monitor, 7)
-    assert plugin._fire(FakeWindow(docs=[]), "/tmp/Closed.cs") is False
-    assert "/tmp/Closed.cs" not in plugin._monitors
+    mgr._monitors["/tmp/Closed.cs"] = (monitor, 7)
+    assert mgr._fire(FakeWindow(docs=[]), "/tmp/Closed.cs") is False
+    assert "/tmp/Closed.cs" not in mgr._monitors
     assert monitor.cancelled
 
 
@@ -488,13 +488,13 @@ def test_sync_watches_adds_and_removes():
             _write(p1, "a")
             _write(p2, "b")
             window = FakeWindow(docs=[FakeDoc(location=p1), FakeDoc(location=p2)])
-            plugin = _plugin()
-            plugin._sync_watches(window)
-            assert set(plugin._monitors) == {p1, p2}
+            mgr = _mgr()
+            mgr._sync_watches(window)
+            assert set(mgr._monitors) == {p1, p2}
             assert set(FakeGio.files) == {p1, p2}
             window = FakeWindow(docs=[FakeDoc(location=p1)])
-            plugin._sync_watches(window)
-            assert set(plugin._monitors) == {p1}
+            mgr._sync_watches(window)
+            assert set(mgr._monitors) == {p1}
             assert FakeGio.files[p2].monitor.cancelled
     finally:
         _restore_module(saved)
@@ -503,9 +503,9 @@ def test_sync_watches_adds_and_removes():
 def test_sync_watches_without_gio_is_noop():
     saved = _patched_module(Gio=None)
     try:
-        plugin = _plugin()
-        plugin._sync_watches(FakeWindow(docs=[FakeDoc()]))
-        assert plugin._monitors == {}
+        mgr = _mgr()
+        mgr._sync_watches(FakeWindow(docs=[FakeDoc()]))
+        assert mgr._monitors == {}
     finally:
         _restore_module(saved)
 

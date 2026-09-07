@@ -1,4 +1,4 @@
-"""git-inline-diff plugin behavior (headless)."""
+"""Git inline diff behavior (headless)."""
 
 import os
 import shutil
@@ -12,7 +12,6 @@ import pytest
 
 import thor.gitdiff as gitinline
 from thor.gitdiff import diffparse
-IS_THOR = True  # thor standalone, skip plugin UI tests
 
 
 def _has_git():
@@ -109,10 +108,10 @@ def test_buffer_diff_staged_new_yields_added():
 
 
 def test_refresh_path_skips_spawn_while_in_flight():
-    plugin = _plugin()
-    plugin._generations = {"/tmp/x.cs": 1}
-    plugin._in_flight = {"/tmp/x.cs"}
-    plugin._snapshot_doc = lambda path: {"modified": False, "line_count": 1, "text": None}  # type: ignore[method-assign]
+    mgr = _mgr()
+    mgr._generations = {"/tmp/x.cs": 1}
+    mgr._in_flight = {"/tmp/x.cs"}
+    mgr._snapshot_doc = lambda path: {"modified": False, "line_count": 1, "text": None}  # type: ignore[method-assign]
     spawned = []
     real_thread = threading.Thread
 
@@ -125,10 +124,10 @@ def test_refresh_path_skips_spawn_while_in_flight():
 
     threading.Thread = _FakeThread  # type: ignore[assignment]
     try:
-        plugin.refresh_path("/tmp/x.cs")
+        mgr.refresh_path("/tmp/x.cs")
         assert spawned == []
-        plugin._in_flight = set()
-        plugin.refresh_path("/tmp/x.cs")
+        mgr._in_flight = set()
+        mgr.refresh_path("/tmp/x.cs")
         assert len(spawned) == 1
     finally:
         threading.Thread = real_thread  # type: ignore[assignment]
@@ -174,7 +173,7 @@ def test_non_repo_soft_fails():
         assert diffparse.find_git_root(tmp) is None
 
 
-def test_plugin_imports_headless():
+def test_imports_headless():
     assert gitinline._diffparse is diffparse
     assert gitinline._REFRESH_DEBOUNCE_MS == 300
 
@@ -313,53 +312,53 @@ class _FakeDoc:
         self.disconnected.append(handler_id)
 
 
-def _plugin():
-    plugin = gitinline.GitDiffManager.__new__(gitinline.GitDiffManager)
-    plugin._signal_ids = []
-    plugin._mark_views_configured = set()
-    plugin._generations = {}
-    plugin._tab_states = {}
-    plugin._debounce_timer = None
-    plugin._pending_paths = set()
-    plugin._doc_handlers = {}
-    plugin._in_flight = set()
-    plugin._git_monitors = []
-    plugin._root_monitors = {}
-    return plugin
+def _mgr():
+    mgr = gitinline.GitDiffManager.__new__(gitinline.GitDiffManager)
+    mgr._signal_ids = []
+    mgr._mark_views_configured = set()
+    mgr._generations = {}
+    mgr._tab_states = {}
+    mgr._debounce_timer = None
+    mgr._pending_paths = set()
+    mgr._doc_handlers = {}
+    mgr._in_flight = set()
+    mgr._git_monitors = []
+    mgr._root_monitors = {}
+    return mgr
 
 
 def test_doc_watch_connects_once_and_schedules_on_change():
     doc = _FakeDoc("/tmp/F.cs")
-    plugin = _plugin()
+    mgr = _mgr()
     scheduled = []
-    plugin._schedule_paths = lambda paths: scheduled.append(list(paths))  # type: ignore[method-assign]
-    plugin._watch_doc(doc)
-    plugin._watch_doc(doc)
+    mgr._schedule_paths = lambda paths: scheduled.append(list(paths))  # type: ignore[method-assign]
+    mgr._watch_doc(doc)
+    mgr._watch_doc(doc)
     assert doc.connected == ["changed"]
-    plugin._on_doc_changed(doc)
+    mgr._on_doc_changed(doc)
     assert scheduled == [["/tmp/F.cs"]]
 
 
 def test_doc_unwatch_disconnects():
     doc = _FakeDoc("/tmp/F.cs")
-    plugin = _plugin()
-    plugin._watch_doc(doc)
-    plugin._unwatch_doc(doc)
+    mgr = _mgr()
+    mgr._watch_doc(doc)
+    mgr._unwatch_doc(doc)
     assert doc.disconnected == [1]
-    assert plugin._doc_handlers == {}
+    assert mgr._doc_handlers == {}
 
 
 def test_snapshot_captures_buffer_text_when_dirty():
     doc = _FakeDoc("/tmp/F.cs", modified=True, text="a\nb\n")
-    plugin = _plugin()
-    plugin._find_doc = lambda path: doc if path == "/tmp/F.cs" else None  # type: ignore[method-assign]
-    snapshot = plugin._snapshot_doc("/tmp/F.cs")
+    mgr = _mgr()
+    mgr._find_doc = lambda path: doc if path == "/tmp/F.cs" else None  # type: ignore[method-assign]
+    snapshot = mgr._snapshot_doc("/tmp/F.cs")
     assert snapshot["modified"] is True
     assert snapshot["text"] == "a\nb\n"
     assert snapshot["line_count"] == 2
     clean = _FakeDoc("/tmp/G.cs", modified=False, text="a\n")
-    plugin._find_doc = lambda path: clean if path == "/tmp/G.cs" else None  # type: ignore[method-assign]
-    snapshot = plugin._snapshot_doc("/tmp/G.cs")
+    mgr._find_doc = lambda path: clean if path == "/tmp/G.cs" else None  # type: ignore[method-assign]
+    snapshot = mgr._snapshot_doc("/tmp/G.cs")
     assert snapshot["modified"] is False
     assert snapshot["text"] is None
 
@@ -394,13 +393,13 @@ def test_query_thread_prefers_disk_when_buffer_matches_it():
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         subprocess.run(["git", "commit", "-m", "init"], cwd=tmp, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-        plugin = gitinline.GitDiffManager()
+        mgr = gitinline.GitDiffManager()
         results = []
-        plugin._apply_result = lambda p, r, g: results.append(r) or False  # type: ignore[method-assign]
+        mgr._apply_result = lambda p, r, g: results.append(r) or False  # type: ignore[method-assign]
 
         def run_query(snapshot):
             results.clear()
-            plugin._query_thread(tracked, 0, snapshot)
+            mgr._query_thread(tracked, 0, snapshot)
             if gitinline.GLib is not None:
                 ctx = gitinline.GLib.MainContext.default()
                 for _ in range(200):
@@ -449,13 +448,13 @@ def test_apply_result_removes_stale_marks():
     buf.create_source_mark(
         None, diffparse.CATEGORY_ADDED, buf.get_iter_at_line(0))
     assert len(buf.get_source_marks_at_line(0, None)) == 1
-    plugin = gitinline.GitDiffManager()
-    plugin._generations = {"/tmp/x.cs": 0}
-    plugin._find_doc = lambda path: buf  # type: ignore[method-assign]
-    plugin._configure_marks = lambda doc: None  # type: ignore[method-assign]
-    plugin._apply_result("/tmp/x.cs", {"added": [], "modified": [], "deleted": []}, 0)
+    mgr = gitinline.GitDiffManager()
+    mgr._generations = {"/tmp/x.cs": 0}
+    mgr._find_doc = lambda path: buf  # type: ignore[method-assign]
+    mgr._configure_marks = lambda doc: None  # type: ignore[method-assign]
+    mgr._apply_result("/tmp/x.cs", {"added": [], "modified": [], "deleted": []}, 0)
     assert buf.get_source_marks_at_line(0, None) == []
-    plugin._apply_result("/tmp/x.cs", {"added": [1], "modified": [], "deleted": []}, 0)
+    mgr._apply_result("/tmp/x.cs", {"added": [1], "modified": [], "deleted": []}, 0)
     assert len(buf.get_source_marks_at_line(1, None)) == 1
 
 

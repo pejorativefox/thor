@@ -198,10 +198,10 @@ def test_view_forwarding_without_popup_focus():
         pytest.skip("no display")
     import thor.csharp as thorcsharp
 
-    plugin = thorcsharp.CSharpManager.__new__(thorcsharp.CSharpManager)
+    mgr = thorcsharp.CSharpManager.__new__(thorcsharp.CSharpManager)
     popup = _popup()
-    plugin.completion_popup = popup
-    plugin._completion_forward = None
+    mgr.completion_popup = popup
+    mgr._completion_forward = None
     activated = []
     popup.connect("item-activated", lambda _w, item: activated.append(item.label))
     popup.show()  # visible but focus stays wherever it was
@@ -209,10 +209,10 @@ def test_view_forwarding_without_popup_focus():
     def _key(name):
         return types.SimpleNamespace(keyval=Gdk.keyval_from_name(name))
 
-    assert plugin._forward_completion_key(None, _key("Down")) is True
+    assert mgr._forward_completion_key(None, _key("Down")) is True
     assert popup.selected_item().label == "Write"
-    assert plugin._forward_completion_key(None, _key("a")) is False
-    assert plugin._forward_completion_key(None, _key("Return")) is True
+    assert mgr._forward_completion_key(None, _key("a")) is False
+    assert mgr._forward_completion_key(None, _key("Return")) is True
     assert activated == ["Write"], activated
     popup.destroy()
 
@@ -222,15 +222,15 @@ def test_forwarding_ignored_when_hidden():
         pytest.skip("no display")
     import thor.csharp as thorcsharp
 
-    plugin = thorcsharp.CSharpManager.__new__(thorcsharp.CSharpManager)
+    mgr = thorcsharp.CSharpManager.__new__(thorcsharp.CSharpManager)
     popup = _popup()  # never shown
-    plugin.completion_popup = popup
-    plugin._completion_forward = None
+    mgr.completion_popup = popup
+    mgr._completion_forward = None
 
     def _key(name):
         return types.SimpleNamespace(keyval=Gdk.keyval_from_name(name))
 
-    assert plugin._forward_completion_key(None, _key("Down")) is False
+    assert mgr._forward_completion_key(None, _key("Down")) is False
     popup.destroy()
 
 
