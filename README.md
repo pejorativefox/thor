@@ -9,8 +9,8 @@ A standalone `GtkSourceView` editor that bakes modern comforts in-process (no li
 - Files are colored by git state, like in VS Code: green means new,
   tan means changed, red means deleted.
 - Open a folder with `Ctrl+Shift+O`, or straight from the terminal:
-  `thor-code [folder]` works like `code .` and opens the folder in a
-  new Thor window.
+  `thor-code [folder]` works like `code .` (focuses the live window when
+  the folder is already open; `--new-window` forces a duplicate).
 
 **Quick file opener**
 - Press `Ctrl+P`, start typing any part of a file name, and jump to it.
@@ -125,12 +125,14 @@ python3 doctor.py --help   # filtered
 
 The usual culprits:
 
-1. **Windows are isolated processes.** Every window is its own
+1. **One editor per process, one window per folder.** Every window is its own
    process (`NON_UNIQUE` application, one window each). A second
-   `thor-code <path>` for an already-open folder is refused (per-root
-   lock); `thor-open` always spawns a fresh process. `Ctrl+Q` and the
-   window-manager close run the same per-window exit path, so one quit
-   can never take down a sibling window.
+   `thor-code <path>` for an already-open folder focuses the live window
+   via the per-root IPC socket (no duplicate); `thor-open file:line` inside
+   a live root forwards into it. `thor --new-window <folder>` forces a
+   duplicate. `Ctrl+Q` and the window-manager close run the same per-window
+   exit path, so one quit can never take down a sibling window. Global
+   `~/.config/thor/state.toml` is last-writer-wins by design.
 2. **Panes are hidden.** New panels live in the side/bottom panes; turn
    them on via View → Side Pane / Bottom Pane (or `Ctrl+B` / `Ctrl+E` / `Ctrl+J`).
 3. **C# completions missing.** Make sure the dotnet SDK and

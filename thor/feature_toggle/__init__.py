@@ -71,14 +71,35 @@ class SettingsStore:
         return dict(self._data)
 
     def save(self) -> None:
+        # Atomic + pid-unique tmp (see thor.csharp.settings): concurrent
+        # editors never share a tmp file; last-saver-wins on destination.
+        import tempfile
+
         try:
-            tmp = self._path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(f"[{GROUP}]\n")
-                for key in DEFAULTS:
-                    value = self._data.get(key, DEFAULTS[key])
-                    f.write(f"{key}={'true' if value else 'false'}\n")
-            os.replace(tmp, self._path)
+            parent = os.path.dirname(self._path) or "."
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except OSError:
+                pass
+            fd, tmp = tempfile.mkstemp(dir=parent, prefix=".settings-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(f"[{GROUP}]\n")
+                    for key in DEFAULTS:
+                        value = self._data.get(key, DEFAULTS[key])
+                        f.write(f"{key}={'true' if value else 'false'}\n")
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError:
+                        pass
+                os.replace(tmp, self._path)
+            except Exception:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             logger.debug(f"settings save failed: {e!r}")
 

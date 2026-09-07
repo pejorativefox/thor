@@ -279,7 +279,9 @@ def _write_json_atomic(path: str, obj: dict) -> bool:
 def _sanitize_backup_name(index: int, path: str | None) -> str:
     base = os.path.basename(path) if path else "untitled"
     safe = "".join(c if (c.isalnum() or c in (".", "-", "_")) else "_" for c in base)[:40] or "file"
-    return f"{index:03d}-{safe}.bak"
+    # Pid-suffixed so two processes sharing a root (e.g. --new-window
+    # duplicates) never collide on 000-name.bak names.
+    return f"{index:03d}-{os.getpid()}-{safe}.bak"
 
 
 def save_for_root(root: str, window, base: str | None = None) -> str | None:
@@ -329,14 +331,30 @@ def save_for_root(root: str, window, base: str | None = None) -> str | None:
                "active": max(0, min(active, max(0, len(files) - 1))), "files": files}
     if not _write_json_atomic(session_path, payload):
         return None
-    # Prune stale backups best-effort.
+    # Prune stale backups best-effort. One editor per process means a
+    # --new-window duplicate may share this root: never delete a sibling
+    # process's recent .bak files — only our own stale names plus files
+    # older than 7 days (crashed owners).
     try:
+        import time as _time
+
+        now = _time.time()
+        own_tag = f"-{os.getpid()}-"
         for name in os.listdir(unsaved_dir):
-            if name not in valid_backups and name.endswith(".bak"):
-                try:
-                    os.unlink(os.path.join(unsaved_dir, name))
-                except OSError:
-                    logger.debug("session backup prune failed for %s", name, exc_info=True)
+            if name in valid_backups or not name.endswith(".bak"):
+                continue
+            try:
+                full = os.path.join(unsaved_dir, name)
+                if own_tag in name:
+                    os.unlink(full)
+                else:
+                    try:
+                        if now - os.path.getmtime(full) > 7 * 86400:
+                            os.unlink(full)
+                    except OSError:
+                        pass
+            except OSError:
+                logger.debug("session backup prune failed for %s", name, exc_info=True)
     except OSError:
         logger.debug("session backup prune scan failed", exc_info=True)
     return session_path

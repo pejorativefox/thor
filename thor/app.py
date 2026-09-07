@@ -191,6 +191,9 @@ if Gtk is not None:
             self._pending_new_window: bool = False
             # Per-root lock held for the process lifetime (set by main()).
             self._root_lock = None
+            # Per-root IPC owner server (focus + file forward). Started once
+            # the owned root is known; stopped on shutdown.
+            self._ipc_server = None
             # CLI option passthrough (best-effort; argv parsing doesn't depend on it)
             try:
                 self.add_main_option("new-window", ord("n"), GLib.OptionFlags.NONE, GLib.OptionArg.NONE, "Open in new window", None)  # type: ignore[attr-defined]
@@ -266,6 +269,7 @@ if Gtk is not None:
                 lock.release()
             except Exception:
                 logger.debug("root lock release failed", exc_info=True)
+            self._stop_ipc_server()
 
         def do_window_removed(self, window: Gtk.Window) -> None:  # type: ignore[override]
             # Single-window process: save this window, then let GTK tear
@@ -301,6 +305,10 @@ if Gtk is not None:
             except Exception:
                 pass
             try:
+                self._stop_ipc_server()
+            except Exception:
+                pass
+            try:
                 Gtk.Application.do_shutdown(self)
             except Exception:
                 pass
@@ -330,6 +338,122 @@ if Gtk is not None:
                 )
             except Exception as e:
                 logger.warning("spawn new process failed: %r", e)
+
+        # -- Per-root IPC owner side (focus + file forward) -----------------
+        def _owned_root(self) -> str | None:
+            try:
+                lock = getattr(self, "_root_lock", None)
+                if lock is not None and getattr(lock, "root", None):
+                    return os.path.abspath(lock.root)
+            except Exception:
+                pass
+            try:
+                win = self.get_active_window()
+            except Exception:
+                win = None
+            if win is not None:
+                try:
+                    from .project import session as _session
+
+                    return _session.get_window_root(win)
+                except Exception:
+                    pass
+                try:
+                    initial = getattr(win, "_initial_folder", None)
+                    if initial and os.path.isdir(initial):
+                        return os.path.abspath(initial)
+                except Exception:
+                    pass
+            return None
+
+        def _start_ipc_server(self, root: str | None) -> None:
+            if not root or not os.path.isdir(root):
+                return
+            if getattr(self, "_ipc_server", None) is not None:
+                return
+            try:
+                from .ipc import IpcServer
+
+                server = IpcServer(
+                    root,
+                    on_present=self._handle_ipc_present,
+                    on_open=self._handle_ipc_open,
+                )
+                if server.start():
+                    self._ipc_server = server
+            except Exception:
+                logger.debug("ipc server start failed", exc_info=True)
+
+        def _stop_ipc_server(self) -> None:
+            server = getattr(self, "_ipc_server", None)
+            self._ipc_server = None
+            if server is None:
+                return
+            try:
+                server.stop()
+            except Exception:
+                logger.debug("ipc server stop failed", exc_info=True)
+
+        def _handle_ipc_present(self) -> None:
+            try:
+                if GLib is not None:
+                    GLib.idle_add(self._do_present)
+                else:
+                    self._do_present()
+            except Exception:
+                logger.debug("ipc present handle failed", exc_info=True)
+
+        def _do_present(self) -> bool:
+            try:
+                win = self.get_active_window()
+                if win is not None:
+                    win.present()
+                    if hasattr(win, "focus_active_editor"):
+                        try:
+                            win.focus_active_editor()
+                        except Exception:
+                            pass
+            except Exception:
+                logger.debug("ipc present failed", exc_info=True)
+            return False
+
+        def _handle_ipc_open(self, files: list[dict]) -> None:
+            try:
+                if GLib is not None:
+                    GLib.idle_add(self._do_ipc_open, list(files or []))
+                else:
+                    self._do_ipc_open(list(files or []))
+            except Exception:
+                logger.debug("ipc open handle failed", exc_info=True)
+
+        def _do_ipc_open(self, files: list[dict]) -> bool:
+            try:
+                win = self.get_active_window()
+                if win is None:
+                    return False
+                for entry in files or []:
+                    try:
+                        if not isinstance(entry, dict):
+                            continue
+                        path = entry.get("path")
+                        if not path or not isinstance(path, str):
+                            continue
+                        line = entry.get("line")
+                        col = entry.get("col")
+                        line_pos = (int(line) - 1) if line and int(line) > 0 else -1
+                        col_pos = (int(col) - 1) if col and int(col) > 0 else -1
+                        win.open_file(path, line_pos=line_pos, col_pos=col_pos, jump_to=True)
+                    except Exception:
+                        logger.debug("ipc open entry failed", exc_info=True)
+                try:
+                    win.present()
+                    if hasattr(win, "focus_active_editor"):
+                        win.focus_active_editor()
+                except Exception:
+                    pass
+            except Exception:
+                logger.debug("ipc open failed", exc_info=True)
+            return False
 
         def _open_files_into_window(self, win, files: list[str], file_lines: dict | None = None) -> None:
             """Open a file list into the single owned window."""
@@ -563,14 +687,32 @@ if Gtk is not None:
                         win.create_tab(jump_to=True)
                 except Exception:
                     logger.debug("_create_window: empty notebook guard failed", exc_info=True)
+            # Own this root for focus + file forwarding from second launches.
+            try:
+                from .project import session as _session2
+
+                owned = _session2.get_window_root(win)
+                if owned is None and folder and os.path.isdir(folder):
+                    owned = os.path.abspath(folder)
+                lock = getattr(self, "_root_lock", None)
+                if lock is not None and getattr(lock, "root", None):
+                    owned = os.path.abspath(lock.root)
+                self._start_ipc_server(owned)
+            except Exception:
+                logger.debug("_create_window: ipc server start failed", exc_info=True)
             return win
 
         def _new_window(self) -> None:
             # Isolated process: a second window is a second process, never
             # a second ThorWindow in this one. --new-window bypasses the
-            # same-root lock gate in main().
+            # same-root lock gate in main(); forward the current root so
+            # the child starts in the same folder instead of its cwd.
             try:
-                self._spawn_new_process(["--new-window"])
+                root = self._owned_root()
+                if root and os.path.isdir(root):
+                    self._spawn_new_process(["--new-window", root])
+                else:
+                    self._spawn_new_process(["--new-window"])
             except Exception:
                 logger.exception("_new_window: spawn failed")
                 return
@@ -596,9 +738,20 @@ if Gtk is not None:
                         logger.debug("open folder dialog filename failed", exc_info=True)
                         folder = None
                     if folder and os.path.isdir(folder):
+                        # Already open elsewhere: focus it instead of a
+                        # silent detached spawn that would exit 2 to DEVNULL.
+                        try:
+                            from . import ipc as _ipc
+
+                            if _ipc.is_root_live(folder):
+                                if _ipc.notify_existing(folder):
+                                    self._show_already_open_notice(folder, win)
+                                    return
+                        except Exception:
+                            logger.debug("open folder live check failed", exc_info=True)
                         # Isolated process: hand the folder to a fresh
                         # process. That child enforces the same-root lock
-                        # gate in main() and refuses duplicates itself.
+                        # gate in main() and focuses the owner on duplicates.
                         try:
                             self._spawn_new_process([folder])
                         except Exception:
@@ -613,6 +766,27 @@ if Gtk is not None:
                         logger.debug("open folder dialog destroy failed", exc_info=True)
         # Backward compat alias for typo
         _promp_open_folder = _prompt_open_folder
+
+        def _show_already_open_notice(self, folder: str, win=None) -> None:
+            """Visible feedback that a folder is already open (focused)."""
+            try:
+                parent = win if win is not None else self.get_active_window()
+                dlg = Gtk.MessageDialog(  # type: ignore[attr-defined]
+                    transient_for=parent,
+                    flags=0,
+                    message_type=Gtk.MessageType.INFO,  # type: ignore[attr-defined]
+                    buttons=Gtk.ButtonsType.OK,  # type: ignore[attr-defined]
+                    text=f"Already open — focused existing window:\n{folder}",
+                )
+                try:
+                    dlg.run()
+                finally:
+                    try:
+                        dlg.destroy()
+                    except Exception:
+                        pass
+            except Exception:
+                logger.info("folder already open (focused): %s", folder)
 
         def _prompt_open_file(self) -> None:
             win = self.get_active_window()
@@ -713,32 +887,59 @@ def main(argv: list[str] | None = None) -> int:
     if Gtk is None or Gio is None:
         logger.error("Thor: GTK not available (headless).")
         return 1
-    # One process per window: refuse a second process for an explicitly
-    # requested folder that is already live (per-root flock gate).
-    # --new-window bypasses the gate; default-cwd and file-only launches
-    # never take the gate (thor-open always spawns isolated processes).
+    # One process per window, one window per folder: a second process for
+    # an already-live root focuses the owner via per-root IPC socket and
+    # exits 0. --new-window bypasses the gate (intentional duplicate).
+    # Bare `thor` (defaulted cwd) and file-only launches also gate via
+    # the resolved root / enclosing live root so `thor-open file` inside
+    # a live project forwards instead of duplicating it.
     root_lock = None
     try:
-        folder, _files = _resolve_initial_target(argv, cwd=os.getcwd())
-        folder_explicit = folder is not None and _argv_has_path_arg(argv)
+        folder, _files, _file_lines = _resolve_initial_target_with_lines(argv, cwd=os.getcwd())
         forced = "--new-window" in argv or "-n" in argv
-        if folder_explicit and not forced and folder and os.path.isdir(folder):
+        if not forced:
             from .lock import try_acquire_root_lock
 
-            lock, owner_pid = try_acquire_root_lock(folder)
-            if lock is None:
-                if owner_pid is not None:
-                    print(
-                        f"thor: {folder} is already open (pid {owner_pid}); refusing second window",
-                        file=sys.stderr,
-                    )
-                else:
-                    print(
-                        f"thor: {folder} is already open; refusing second window",
-                        file=sys.stderr,
-                    )
-                return 2
-            root_lock = lock
+            if folder and os.path.isdir(folder):
+                lock, owner_pid = try_acquire_root_lock(folder)
+                if lock is None:
+                    try:
+                        from . import ipc as _gate_ipc
+
+                        if _gate_ipc.notify_existing(folder, _files, _file_lines):
+                            print(f"thor: {folder} is already open; focused existing window", file=sys.stderr)
+                            return 0
+                    except Exception:
+                        logger.debug("gate ipc notify failed", exc_info=True)
+                    if owner_pid is not None:
+                        print(
+                            f"thor: {folder} is already open (pid {owner_pid}); focused existing window if available",
+                            file=sys.stderr,
+                        )
+                    else:
+                        print(
+                            f"thor: {folder} is already open; focused existing window if available",
+                            file=sys.stderr,
+                        )
+                    return 2
+                root_lock = lock
+            elif _files:
+                try:
+                    from . import ipc as _file_ipc
+
+                    remaining: list[str] = []
+                    for fp in _files:
+                        live = _file_ipc.find_live_root_for_path(fp)
+                        if live and _file_ipc.notify_existing(live, [fp], _file_lines):
+                            continue
+                        remaining.append(fp)
+                    if remaining != _files and not remaining:
+                        print("thor: forwarded to existing window", file=sys.stderr)
+                        return 0
+                except Exception:
+                    logger.debug("file forward gate failed (fail-open)", exc_info=True)
+    except SystemExit:
+        raise
     except Exception:
         logger.debug("root lock gate failed (fail-open)", exc_info=True)
         root_lock = None

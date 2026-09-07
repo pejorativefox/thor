@@ -2,8 +2,10 @@
 """Per-root single-window locks — one process per folder.
 
 Each editor process owns at most one window. A second `thor-code <path>`
-for an already-live root is refused (no shared memory, no DBus, no focus
-stealing): the live process holds an exclusive non-blocking `flock` on
+for an already-live root focuses the owner via the per-root IPC socket
+(see :mod:`thor.ipc`); only when delivery fails does the launcher exit 2
+(no shared memory, no DBus, no focus stealing by the toolkit itself):
+the live process holds an exclusive non-blocking `flock` on
 `locks/<sha256(canon-root)>.lock` for its whole lifetime. The kernel
 releases the lock on crash, so stale locks are impossible.
 

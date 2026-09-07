@@ -8,16 +8,13 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 try:
     from thor import xdg
-    THOR_CACHE_DIR = os.path.dirname(xdg.pending_root_path())
     THOR_MARKER = xdg.marker_log_path()
     ROSLYN_LOG_DIR = xdg.roslyn_log_dir()
 except Exception:
-    THOR_CACHE_DIR = os.path.expanduser("~/.cache/thor/project-mode")
     THOR_MARKER = f"/tmp/thor-csharp-{os.getuid()}.log"
     ROSLYN_LOG_DIR = os.path.expanduser("~/.local/state/thor/logs")
 
@@ -85,6 +82,12 @@ def main() -> int:
         os.path.isfile(os.path.join(REPO_DIR, "thor-open")) or shutil.which("thor-open") is not None,
         "thor-open missing",
     )
+    check(
+        "thor on PATH (or thor-cli fallback)",
+        shutil.which("thor") is not None or os.path.isfile(os.path.join(REPO_DIR, "thor-cli")),
+        "pip install -e . to provide `thor`, or use thor-cli",
+        warn_only=True,
+    )
 
     print("\n-- Thor GI plumbing --")
     gi_ok = False
@@ -124,27 +127,12 @@ def main() -> int:
     check("roslyn-language-server", roslyn_ok, roslyn_hint, warn_only=True)
 
     print("\n-- Thor state & cache --")
-    # pending-root handoff
-    pending = os.path.join(THOR_CACHE_DIR, "pending-root")
-    try:
-        if os.path.isfile(pending):
-            age = time.time() - os.path.getmtime(pending)
-            check(
-                "no stale pending-root handoff",
-                age < 60,
-                f"stale {pending} ({age:.0f}s old) — rm it or ignore (auto-expires)",
-                warn_only=True,
-            )
-        else:
-            check("no stale pending-root handoff", True, "")
-    except Exception:
-        pass
-
-    # thor processes (one per window; no shared state to reload)
+    # thor processes: one per window, one window per folder. Second
+    # launch for a live root focuses the owner via per-root IPC socket.
     tprocs = _thor_processes()
     if tprocs:
         print(f"[info] Thor running: {', '.join(tprocs[:3])}")
-        print("       -> each window is its own process; plugins/settings load fresh per window")
+        print("       -> each window is its own process; second open focuses via IPC")
 
     roslyn_log = os.path.join(ROSLYN_LOG_DIR, "roslyn-stderr.log")
     legacy_roslyn_log = os.path.expanduser("~/.cache/thor/thor-csharp/roslyn-logs/roslyn-stderr.log")

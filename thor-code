@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """thor-code — open a folder in Thor (code . equivalent).
 
-Each window is its own process: this only spawns `thor <folder>`.
-The child enforces the same-root lock gate itself and refuses a
-second window for an already-live root.
+One editor per process, one window per folder: this focuses the live
+window for an already-open root (via per-root IPC) and only spawns
+`thor <folder>` otherwise. `--new-window` forces a duplicate process.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import os
 import subprocess
 import sys
 
-USAGE = "usage: thor-code [folder]"
+USAGE = "usage: thor-code [--new-window] [folder]"
 
 VERSION = "0.1.0"
 
@@ -25,19 +25,42 @@ def resolve_target(argv: list[str]) -> str | None:
     return os.path.abspath(os.path.expanduser(args[0]))
 
 
-def launch(target: str) -> int:
+def _wants_new_window(argv: list[str]) -> bool:
+    return any(a in ("--new-window", "-n") for a in argv[1:])
+
+
+def launch(target: str, extra_args: list[str] | None = None) -> int:
     if not os.path.isdir(target):
         print(f"thor-code: not a folder: {target}", file=sys.stderr)
         return 2
+    # Already live: focus it instead of spawning a duplicate that would
+    # just exit 2 to DEVNULL. The owner presents its window.
+    if not (extra_args and any(a in ("--new-window", "-n") for a in extra_args)):
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from thor import ipc as _ipc  # type: ignore
+
+            if _ipc.is_root_live(target):
+                if _ipc.notify_existing(target):
+                    print(f"thor-code: {target} is already open; focused existing window", file=sys.stderr)
+                    return 0
+        except Exception:
+            pass
+        finally:
+            try:
+                sys.path.remove(os.path.dirname(os.path.abspath(__file__)))
+            except ValueError:
+                pass
     # Isolated processes: no pending-root handoff file anymore. Just
-    # launch thor; the child takes the same-root lock or refuses.
+    # launch thor; the child takes the same-root lock or focuses the owner.
     # Launch thor (this process's thor-cli or installed thor)
     thor_bin = os.path.join(os.path.dirname(__file__), "thor-cli")
     if not os.path.isfile(thor_bin):
         thor_bin = "thor"
+    argv = [*(extra_args or []), target]
     try:
         subprocess.Popen(
-            [sys.executable, thor_bin, target] if os.path.isfile(thor_bin) and thor_bin.endswith("thor-cli") else [thor_bin, target],
+            [sys.executable, thor_bin, *argv] if os.path.isfile(thor_bin) and thor_bin.endswith("thor-cli") else [thor_bin, *argv],
             cwd=target,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -60,7 +83,8 @@ def main(argv: list[str]) -> int:
     if target is None:
         print(USAGE)
         return 0
-    return launch(target)
+    extra = ["--new-window"] if _wants_new_window(argv) else []
+    return launch(target, extra_args=extra)
 
 
 if __name__ == "__main__":

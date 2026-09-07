@@ -59,6 +59,14 @@ for bin in thor-open thor-code thor-cli; do
         echo "Installed $bin to $BIN_DIR"
     fi
 done
+# `thor` itself comes from `pip install -e .` (console_script thor.app:main).
+# Provide a PATH shim when it is missing so desktop Exec=thor and
+# _spawn_argv fallback keep working without pip install.
+if ! command -v thor >/dev/null 2>&1 && [ -f "$BIN_DIR/thor-cli" ]; then
+    printf '#!/usr/bin/env bash\nexec python3 "%s" "$@"\n' "$BIN_DIR/thor-cli" > "$BIN_DIR/thor"
+    chmod +x "$BIN_DIR/thor"
+    echo "Installed thor shim to $BIN_DIR (thor-cli wrapper)"
+fi
 
 # 6. State / Logs directory
 mkdir -p "$LOG_DIR"
