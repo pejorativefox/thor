@@ -440,18 +440,21 @@ if Gtk is not None and GObject is not None:
             except Exception as e:
                 logger.debug("_restore_panel_state failed: %r", e, exc_info=True)
 
-        def focus_active_editor(self) -> bool:
-            """Always place focus on the active editor view on startup or focus requests."""
+        def focus_active_editor(self) -> None:
+            """Always place focus on the active editor view on startup or focus requests.
+
+            Returns None so this is safe to pass directly to GLib.idle_add
+            (a truthy return would re-arm the idle source forever).
+            """
             try:
                 tab = self.get_active_tab()
                 if tab is not None:
                     view = tab.get_view()
                     if view is not None:
                         view.grab_focus()
-                        return True
+                        return
             except Exception:
                 logger.debug("focus_active_editor failed", exc_info=True)
-            return False
 
         def toggle_word_wrap(self) -> bool:
             """Flip the window-wide word-wrap setting; returns the new state.

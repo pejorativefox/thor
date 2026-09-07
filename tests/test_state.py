@@ -175,6 +175,11 @@ def test_window_panel_state_restore_and_focus(monkeypatch):
             view = tab.get_view()
             assert view is not None
 
+            # Regression: must return None (falsy) so it is safe to pass
+            # directly to GLib.idle_add; a truthy return would re-arm the
+            # idle source forever and spin the main loop.
+            assert not win.focus_active_editor()
+
             # Changing panel visibility updates panel state file
             win._side_panel.set_target_visible(True)
             win._save_panel_state()
