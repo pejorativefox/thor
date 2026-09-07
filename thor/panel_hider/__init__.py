@@ -20,8 +20,6 @@ try:
 except Exception:  # headless / missing typelib
     Gtk = Gdk = Gio = GLib = None  # type: ignore[no-redef]
 
-from ..keys import decode_key_event
-
 # ---------------------------------------------------------------------------
 # Helpers (window-aware, preserve original names/logic)
 # ---------------------------------------------------------------------------
@@ -195,13 +193,6 @@ def _handle_global_key(window, keyname: str, ctrl: bool, shift: bool, alt: bool)
         return True
     return False
 
-def _on_window_key_press(window, event) -> bool:
-    parts = decode_key_event(event)
-    if parts is None:
-        return False
-    keyname, ctrl, shift, alt = parts
-    return _handle_global_key(window, keyname, ctrl, shift, alt)
-
 # ---------------------------------------------------------------------------
 # Public API — attach/detach for ThorWindow
 # ---------------------------------------------------------------------------
@@ -209,48 +200,37 @@ def _on_window_key_press(window, event) -> bool:
 def attach(window) -> int | None:
     """Wire panel-hider keybindings to *window*.
 
-    Connects ``key-press-event`` and toggles side/bottom panels:
-    Ctrl+B hide both, Ctrl+J toggle bottom, Ctrl+E toggle side.
+    Registers with the window key router and toggles side/bottom
+    panels: Ctrl+B hide both, Ctrl+J toggle bottom, Ctrl+E toggle side.
     Soft-fails (returns None) when Gtk is unavailable.
     """
     if Gtk is None or window is None:
         return None
     # avoid double-attach
     try:
-        existing = getattr(window, "_thor_panel_hider_key_id", None)
-        if existing is not None:
-            return existing
+        if getattr(window, "_thor_panel_hider_key_handler", None) is not None:
+            return None
     except Exception:
         pass
     try:
-        hid = window.connect("key-press-event", _on_window_key_press)
+        window.register_key_handler(_handle_global_key)
+        window._thor_panel_hider_key_handler = _handle_global_key  # type: ignore[attr-defined]
     except Exception as e:
-        logger.debug(f"window keys connect failed: {e!r}")
+        logger.debug(f"window keys register failed: {e!r}")
         return None
-    try:
-        window._thor_panel_hider_key_id = hid  # type: ignore[attr-defined]
-    except Exception:
-        pass
-    return hid
+    return None
 
 def detach(window) -> None:
     """Disconnect panel-hider key handler from *window*."""
     if window is None:
         return
-    hid = None
-    try:
-        hid = getattr(window, "_thor_panel_hider_key_id", None)
-    except Exception:
-        pass
-    if hid is not None:
+    handler = getattr(window, "_thor_panel_hider_key_handler", None)
+    if handler is not None:
         try:
-            window.disconnect(hid)
+            window.unregister_key_handler(handler)
         except Exception:
             pass
         try:
-            delattr(window, "_thor_panel_hider_key_id")
+            delattr(window, "_thor_panel_hider_key_handler")
         except Exception:
-            try:
-                window._thor_panel_hider_key_id = None  # type: ignore[attr-defined]
-            except Exception:
-                pass
+            pass

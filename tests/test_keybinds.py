@@ -108,23 +108,6 @@ def test_other_keys_ignored():
     assert window.activated == []
 
 
-def test_window_key_press_drives_handler():
-    try:
-        import gi
-
-        gi.require_version("Gdk", "3.0")
-        from gi.repository import Gdk
-    except Exception as e:
-        pytest.skip(f"no Gdk ({e})")
-    window = _FakeWindow(3)
-    event = types.SimpleNamespace(
-        state=int(Gdk.ModifierType.CONTROL_MASK),
-        keyval=Gdk.keyval_from_name("Page_Down"),
-    )
-    assert keybinds._on_window_key_press(window, event) is True
-    assert window.activated == [window.tabs[1]]
-
-
 class _FakeIter:
     def __init__(self, buf, line, eol=False):
         self._buf = buf

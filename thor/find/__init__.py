@@ -290,7 +290,6 @@ class FindManager:
         self._current: int | None = None
         self._query: str = ""
         self._case_sensitive: bool = False
-        self._handler_id: int | None = None
         self._tab_handler: int | None = None
         self._buffer_handler: int | None = None
         self._current_doc = None
@@ -329,11 +328,12 @@ class FindManager:
             self.bar = None
             return
 
-        # key handling — connect after window's own handler so we can intercept Ctrl+F
+        # key handling — register with the window router (runs after the
+        # window's own shortcuts) so we can intercept Ctrl+F
         try:
-            self._handler_id = window.connect("key-press-event", self._on_window_key)
+            window.register_key_handler(self._handle_key)
         except Exception as e:
-            logger.debug(f"find key connect failed: {e!r}")
+            logger.debug(f"find key register failed: {e!r}")
 
         # tab switch → re-apply for new doc
         try:
@@ -590,12 +590,8 @@ class FindManager:
         self._update_label()
         self._select_hit(doc, view, self._hits[prv])
 
-    def _on_window_key(self, window, event) -> bool:
-        parts = decode_key_event(event)
-        if parts is None:
-            return False
+    def _handle_key(self, window, keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
         try:
-            keyname, ctrl, shift, alt = parts
             lower = keyname.lower()
 
             # Escape hides bar when visible (even if entry not focused)
@@ -660,11 +656,10 @@ def detach(window) -> None:
     if mgr is None:
         return
     try:
-        if mgr._handler_id is not None:
-            try:
-                window.disconnect(mgr._handler_id)
-            except Exception:
-                pass
+        try:
+            window.unregister_key_handler(mgr._handle_key)
+        except Exception:
+            pass
         if mgr._tab_handler is not None:
             try:
                 window.disconnect(mgr._tab_handler)

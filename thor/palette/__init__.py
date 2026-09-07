@@ -17,7 +17,6 @@ except Exception:  # headless
     GObject = Gtk = Gdk = Gio = GLib = None  # type: ignore
 
 from thor.fuzzy.matcher import fuzzy_match, markup_highlight
-from thor.keys import decode_key_event
 
 SETTINGS_FILENAME = "state.toml"
 
@@ -256,21 +255,20 @@ class _PaletteManager:
         self._window_key_id = None
 
     def attach(self) -> None:
-        if Gtk is None:
-            return
         try:
-            self._window_key_id = self.window.connect("key-press-event", self._on_window_key_press)
+            self.window.register_key_handler(self._handle_key)
+            self._registered = True
         except Exception as e:
-            logger.debug(f"palette keys connect failed: {e!r}")
-            self._window_key_id = None
+            logger.debug(f"palette keys register failed: {e!r}")
+            self._registered = False
 
     def detach(self) -> None:
-        if self._window_key_id is not None:
+        if self._registered:
             try:
-                self.window.disconnect(self._window_key_id)
+                self.window.unregister_key_handler(self._handle_key)
             except Exception:
                 pass
-        self._window_key_id = None
+        self._registered = False
 
     def _handle_global_key(self, keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
         if ctrl and shift and not alt and (keyname or "").lower() == "p":
@@ -278,11 +276,7 @@ class _PaletteManager:
             return True
         return False
 
-    def _on_window_key_press(self, _window, event) -> bool:
-        parts = decode_key_event(event)
-        if parts is None:
-            return False
-        keyname, ctrl, shift, alt = parts
+    def _handle_key(self, window, keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
         return self._handle_global_key(keyname, ctrl, shift, alt)
 
     def _show(self) -> None:

@@ -118,15 +118,11 @@ def test_find_bar_ctrl_f():
             self.state = state
 
     mgr.hide()
-    key_f = Gdk.keyval_from_name("f")
-    ev = FakeEv(key_f, Gdk.ModifierType.CONTROL_MASK)
-    assert mgr._on_window_key(win, ev) is True
+    assert mgr._handle_key(win, "f", True, False, False) is True
     assert mgr.is_visible()
 
     # Escape hides
-    key_esc = Gdk.keyval_from_name("Escape")
-    ev2 = FakeEv(key_esc, 0)
-    assert mgr._on_window_key(win, ev2) is True
+    assert mgr._handle_key(win, "Escape", False, False, False) is True
     assert not mgr.is_visible()
 
     # get_searchbar shim

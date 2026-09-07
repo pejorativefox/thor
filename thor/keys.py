@@ -8,8 +8,10 @@ own ``Gtk/Gdk is None`` guard and ``try/except``.  That decode logic now
 lives here, plus the single source of truth for which keys are owned by
 which feature key handlers.
 
-Key ownership (window-level ``key-press-event`` handlers; first handler to
-return True wins, in connect order — see ``host.attach_builtin_features``):
+Key ownership (the window's single key router dispatches to feature
+handlers in attach order — see ``window.register_key_handler`` and
+``host.attach_builtin_features``; each handler only ever returns True
+for the keys it owns):
 
 - window (``ThorWindow._on_key_press``): Ctrl+S/O/N (+Shift), Ctrl+Q
   (window close via the delete-event path — one process owns one window,
@@ -20,9 +22,6 @@ return True wins, in connect order — see ``host.attach_builtin_features``):
   terminal close, not window close).
 - keybinds: Ctrl+PageUp/Down, Ctrl+C/X/V line hijack, Ctrl+W (document tab
   close, only when an editor is focused), Ctrl+,.
-
-The ``*_FEATURE_KEYS`` sets are the union of keys owned by *other* features:
-window and keybinds check these and return False so the owning handler runs.
 
 Headless-safe: imports degrade to None and ``decode_key_event`` returns None
 when GTK is unavailable, so callers just fall through (return False).
@@ -38,23 +37,6 @@ try:
     from gi.repository import Gtk, Gdk  # type: ignore
 except Exception:  # headless
     Gtk = Gdk = None  # type: ignore[assignment]
-
-# Ctrl (no shift) keys owned by sibling window-key handlers.  window and
-# keybinds both decline these so the owning handler runs.
-CTRL_FEATURE_KEYS = frozenset({
-    "p",        # fuzzy finder
-    "b", "j", "e",  # panel_hider
-    "f", "g",   # find
-    "grave", "quoteleft", "asciigrave", "`",  # terminal
-})
-
-# Ctrl+Shift keys owned by siblings.  Declined by window._on_key_press.
-CTRL_SHIFT_FEATURE_KEYS = frozenset({
-    "p",        # palette
-    "t", "w",   # terminal (new / close tab)
-    "g",        # find previous
-})
-
 
 def decode_key_event(event):
     """Decode a GTK key event into (keyname, ctrl, shift, alt).
@@ -78,8 +60,6 @@ def decode_key_event(event):
 
 
 __all__ = [
-    "CTRL_FEATURE_KEYS",
-    "CTRL_SHIFT_FEATURE_KEYS",
     "decode_key_event",
     "Gtk",
     "Gdk",

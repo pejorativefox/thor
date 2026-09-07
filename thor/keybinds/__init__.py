@@ -2,7 +2,7 @@
 """Thor keybinds — tab cycling, line copy/cut/paste, tab close.
 
 Key ownership (return True ONLY when handled, else False so the next
-window ``key-press-event`` handler runs):
+window key-router handler runs — see ``window.register_key_handler``):
 
 - This module: Ctrl+PageUp/PageDown (tab cycle), Ctrl+C/X/V whole-line
   hijack (only when the focused editable view has NO selection), Ctrl+W
@@ -34,7 +34,7 @@ try:
 except Exception:  # headless
     Gtk = Gdk = None  # type: ignore[assignment]
 
-from ..keys import CTRL_FEATURE_KEYS, decode_key_event
+from ..keys import decode_key_event
 
 def _get_clipboard_text():
     """Return clipboard text or None. Uses Gtk.Clipboard.get_default."""
@@ -196,17 +196,12 @@ def _handle_clipboard_key(lowered, view) -> bool:
 
 def handle_global_key(window, keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
     """Handle a window-level key. Returns True only when handled."""
-    # Owned Ctrl-only keys below. Everything else — notably the sibling
-    # feature keys in CTRL_FEATURE_KEYS (panel_hider, fuzzy, find, terminal)
-    # — must fall through (False) so the owning handler runs. Returning
-    # True here would swallow those keys.
+    # Owned Ctrl-only keys below; everything else falls through (False)
+    # so the owning feature handler runs. Returning True here would
+    # swallow sibling keys.
     if not (ctrl and not shift and not alt):
         return False
     lowered = (keyname or "").lower()
-    # Explicitly decline keys owned by sibling features, even though the
-    # generic guard above already rejects most (shifted) variants.
-    if lowered in CTRL_FEATURE_KEYS:
-        return False
     if lowered == "w":
         # Ctrl+W closes the active document tab, but only when the focus
         # is in the editor — never from the terminal (which owns
@@ -246,19 +241,11 @@ def handle_global_key(window, keyname: str, ctrl: bool, shift: bool, alt: bool) 
         return _handle_clipboard_key(lowered, view)
     return False
 
-def _on_window_key_press(window, event) -> bool:
-    """GTK key-press-event handler that delegates to handle_global_key."""
-    parts = decode_key_event(event)
-    if parts is None:
-        return False
-    keyname, ctrl, shift, alt = parts
-    return handle_global_key(window, keyname, ctrl, shift, alt)
-
 def attach(window) -> int | None:
-    """Connect keybinds handler to window's key-press-event.
+    """Register keybinds with the window key router.
 
-    Returns handler id or None if Gtk unavailable or already attached.
-    Headless-safe: no-op when Gtk is None.
+    Returns None (kept for API symmetry). Headless-safe: no-op when Gtk
+    is None.
     """
     if window is None:
         return None
@@ -266,39 +253,32 @@ def attach(window) -> int | None:
         logger.debug("Gtk not available, attach no-op")
         return None
     # avoid double attach
-    existing = getattr(window, "_thor_keybinds_handler_id", None)
-    if existing is not None:
-        return existing
+    if getattr(window, "_thor_keybinds_handler", None) is not None:
+        return None
     try:
-        handler_id = window.connect("key-press-event", _on_window_key_press)
-        try:
-            window._thor_keybinds_handler_id = handler_id  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        logger.debug("keybinds attached handler %s", handler_id)
-        return handler_id
+        window.register_key_handler(handle_global_key)
+        window._thor_keybinds_handler = handle_global_key  # type: ignore[attr-defined]
+        logger.debug("keybinds attached")
+        return None
     except Exception as e:
         logger.debug("attach failed: %r", e, exc_info=True)
         return None
 
 def detach(window) -> None:
-    """Disconnect keybinds handler from window."""
+    """Unregister keybinds handler from window."""
     if window is None:
         return
-    handler_id = getattr(window, "_thor_keybinds_handler_id", None)
-    if handler_id is None:
+    handler = getattr(window, "_thor_keybinds_handler", None)
+    if handler is None:
         return
     try:
-        window.disconnect(handler_id)
+        window.unregister_key_handler(handler)
     except Exception:
         pass
     try:
-        delattr(window, "_thor_keybinds_handler_id")
+        delattr(window, "_thor_keybinds_handler")
     except Exception:
-        try:
-            setattr(window, "_thor_keybinds_handler_id", None)  # type: ignore[attr-defined]
-        except Exception:
-            pass
+        pass
 
 __all__ = [
     "attach",
@@ -310,5 +290,4 @@ __all__ = [
     "_step_tab",
     "_active_editor_view",
     "_handle_clipboard_key",
-    "_on_window_key_press",
 ]

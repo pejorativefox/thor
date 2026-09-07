@@ -904,18 +904,13 @@ def attach(window) -> object | None:
             return True
         return False
 
-    def _on_window_key_press(_win, event) -> bool:
-        parts = decode_key_event(event)
-        if parts is None:
-            return False
-        keyname, ctrl, shift, alt = parts
+    def _handle_key(_win, keyname, ctrl, shift, alt) -> bool:
         return _handle_global(keyname, ctrl, shift, alt)
 
-    window_key_id = None
     try:
-        window_key_id = window.connect("key-press-event", _on_window_key_press)
+        window.register_key_handler(_handle_key)
     except Exception as e:
-        logger.debug(f"window keys connect failed: {e!r}")
+        logger.debug(f"window keys register failed: {e!r}")
 
     # live scheme tracking: re-tint on GSettings change
     scheme_settings = None
@@ -942,7 +937,7 @@ def attach(window) -> object | None:
     # stash for detach
     try:
         window._thor_terminal_panel = panel  # type: ignore[attr-defined]
-        window._thor_terminal_key_id = window_key_id  # type: ignore[attr-defined]
+        window._thor_terminal_key_handler = _handle_key  # type: ignore[attr-defined]
         window._thor_terminal_scheme_settings = scheme_settings  # type: ignore[attr-defined]
         window._thor_terminal_scheme_changed_id = scheme_changed_id  # type: ignore[attr-defined]
     except Exception:
@@ -955,13 +950,13 @@ def detach(window) -> None:
     if window is None:
         return
     panel = getattr(window, "_thor_terminal_panel", None)
-    key_id = getattr(window, "_thor_terminal_key_id", None)
+    key_handler = getattr(window, "_thor_terminal_key_handler", None)
     scheme_settings = getattr(window, "_thor_terminal_scheme_settings", None)
     scheme_changed_id = getattr(window, "_thor_terminal_scheme_changed_id", None)
 
-    if key_id is not None:
+    if key_handler is not None:
         try:
-            window.disconnect(key_id)
+            window.unregister_key_handler(key_handler)
         except Exception:
             pass
     if scheme_changed_id is not None:
@@ -984,7 +979,7 @@ def detach(window) -> None:
             pass
     try:
         window._thor_terminal_panel = None  # type: ignore[attr-defined]
-        window._thor_terminal_key_id = None  # type: ignore[attr-defined]
+        window._thor_terminal_key_handler = None  # type: ignore[attr-defined]
         window._thor_terminal_scheme_settings = None  # type: ignore[attr-defined]
         window._thor_terminal_scheme_changed_id = None  # type: ignore[attr-defined]
     except Exception:

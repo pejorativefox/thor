@@ -35,7 +35,6 @@ except Exception:  # headless / missing typelibs
 
 from .files import list_project_files
 from .matcher import FuzzyIndex, fuzzy_find, fuzzy_match, markup_highlight
-from ..keys import decode_key_event
 
 
 (COL_LABEL, COL_MARKUP, COL_PATH) = range(3)
@@ -419,7 +418,7 @@ class _FuzzyFinderManager:
 
     def __init__(self, window) -> None:
         self.window = window
-        self._window_key_id = None
+        self._registered = False
         self._file_cache: dict[str, list[str]] = {}
         self._file_cache_mtime: dict[str, float] = {}
         self._recent: list[str] = []
@@ -427,22 +426,20 @@ class _FuzzyFinderManager:
     # -- lifecycle -----------------------------------------------------
 
     def attach(self) -> None:
-        if Gtk is None or Gio is None:
-            logger.debug("Gtk/Gio unavailable — fuzzy finder attach skipped (headless)")
-            return
         try:
-            self._window_key_id = self.window.connect("key-press-event", self._on_window_key_press)
+            self.window.register_key_handler(self._handle_key)
+            self._registered = True
         except Exception as e:
-            logger.debug(f"window keys connect failed: {e!r}")
-            self._window_key_id = None
+            logger.debug(f"window keys register failed: {e!r}")
+            self._registered = False
 
     def detach(self) -> None:
-        if self._window_key_id is not None:
+        if self._registered:
             try:
-                self.window.disconnect(self._window_key_id)
+                self.window.unregister_key_handler(self._handle_key)
             except Exception:
                 pass
-        self._window_key_id = None
+        self._registered = False
 
     # -- key handling --------------------------------------------------
 
@@ -453,11 +450,7 @@ class _FuzzyFinderManager:
             return True
         return False
 
-    def _on_window_key_press(self, _window, event) -> bool:
-        parts = decode_key_event(event)
-        if parts is None:
-            return False
-        keyname, ctrl, shift, alt = parts
+    def _handle_key(self, window, keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
         return self._handle_global_key(keyname, ctrl, shift, alt)
 
     # -- file cache ----------------------------------------------------

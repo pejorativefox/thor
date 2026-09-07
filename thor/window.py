@@ -20,7 +20,7 @@ except Exception:  # headless
 
 from .panel import ThorPanel
 from .document import ThorDocument, ThorTab
-from .keys import CTRL_FEATURE_KEYS, CTRL_SHIFT_FEATURE_KEYS, decode_key_event
+from .keys import decode_key_event
 from .state import load_state as load_panel_state, save_state as save_panel_state
 
 if Gtk is not None and GObject is not None:
@@ -239,6 +239,7 @@ if Gtk is not None and GObject is not None:
                 pass
             # Track tabs
             self._tabs: list = []
+            self._key_handlers: list = []
             self._css_provider = None
             self._save_state_timeout_id = None
             self._session_save_timeout_id = None
@@ -1243,21 +1244,33 @@ if Gtk is not None and GObject is not None:
             except Exception:
                 logger.debug("emit tab state failed", exc_info=True)
 
+        def register_key_handler(self, fn) -> None:
+            """Register a feature key handler: ``fn(window, keyname, ctrl, shift, alt) -> bool``.
+
+            Handlers run in registration order (i.e. attach order — see
+            ``host.attach_builtin_features``) after the window's own
+            shortcuts; the first handler returning True consumes the key.
+            Register instead of connecting ``key-press-event`` directly so
+            key routing has exactly one owner and a deterministic order.
+            """
+            if fn not in self._key_handlers:
+                self._key_handlers.append(fn)
+
+        def unregister_key_handler(self, fn) -> None:
+            try:
+                self._key_handlers.remove(fn)
+            except (ValueError, AttributeError):
+                pass
+
         def _on_key_press(self, widget, event) -> bool:
-            # Thor-native save handling (XFCE traditional). Features also listen.
-            # Feature-owned keys fall through explicitly (return False) so this
-            # handler can never swallow them, regardless of later edits below:
-            # panel_hider Ctrl+B/J/E, fuzzy Ctrl+P, find Ctrl+F/G, palette
-            # Ctrl+Shift+P, terminal Ctrl+` and Ctrl+Shift+T/W.
+            # Single key router: window shortcuts first, then feature
+            # handlers in registration order (panel_hider Ctrl+B/J/E,
+            # fuzzy Ctrl+P, find Ctrl+F/G, palette Ctrl+Shift+P, terminal
+            # Ctrl+` and Ctrl+Shift+T/W, keybinds Ctrl+PageUp/Down &c).
             parts = decode_key_event(event)
             if parts is None:
                 return False
             keyname, ctrl, shift, _alt = parts
-            if ctrl and keyname:
-                if not shift and keyname in CTRL_FEATURE_KEYS:
-                    return False
-                if shift and keyname in CTRL_SHIFT_FEATURE_KEYS:
-                    return False
             try:
                 if ctrl and not shift and keyname == "s":
                     self.save_active_tab(save_as=False)
@@ -1302,9 +1315,14 @@ if Gtk is not None and GObject is not None:
                     return True
             except Exception:
                 logger.debug("key press save failed", exc_info=True)
-            # Let features / window handle other shortcuts; keep default propagation
-            # Panel-hider: Ctrl+B etc are handled by feature signal handlers attached to window.
-            # Do not swallow.
+            # Feature handlers: first True wins, exceptions never break routing.
+            for fn in list(getattr(self, "_key_handlers", ())):
+                try:
+                    if fn(self, keyname, ctrl, shift, _alt):
+                        return True
+                except Exception:
+                    logger.debug("feature key handler failed", exc_info=True)
+            # Nothing handled it; keep default GTK propagation.
             return False
 
         def _on_delete_event(self, widget, event) -> bool:

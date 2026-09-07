@@ -195,27 +195,3 @@ def test_global_keys_reject_wrong_modifiers():
     assert panelhider._handle_global_key(window, "b", True, True, False) is False
     assert panelhider._handle_global_key(window, "b", True, False, True) is False
     assert panelhider._handle_global_key(window, "x", True, False, False) is False
-
-
-def test_window_key_press_drives_handler():
-    try:
-        import gi
-
-        gi.require_version("Gdk", "3.0")
-        from gi.repository import Gdk
-    except Exception as e:
-        import pytest
-
-        pytest.skip(f"no Gdk ({e})")
-    called: list[str] = []
-    saved = panelhider._handle_global_key
-    panelhider._handle_global_key = lambda w, *args: (called.append(args[0]), True)[1]
-    try:
-        event = types.SimpleNamespace(
-            state=int(Gdk.ModifierType.CONTROL_MASK),
-            keyval=Gdk.keyval_from_name("b"),
-        )
-        assert panelhider._on_window_key_press(None, event) is True
-    finally:
-        panelhider._handle_global_key = saved
-    assert called == ["b"]
