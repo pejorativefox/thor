@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+"""Startup behaviour: close the untouched starter document.
+
+Settings live in the ``[features]`` section of the main config file
+(``$XDG_CONFIG_HOME/thor/state.toml``); values from the legacy
+plugin-era INI (``~/.config/thor/plugins/feature-toggle/settings.ini``)
+are honored as a one-time fallback until the section exists.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -11,103 +19,54 @@ try:
 except Exception:  # headless / no gi
     GLib = None  # type: ignore
 
-GROUP = "FeatureToggle"
+SECTION = "features"
+
 DEFAULTS = {
     "close_untitled_on_startup": True,
 }
 
 
-def _config_dir() -> str:
+def _load_settings() -> dict:
+    """Settings merged over defaults, with legacy INI fallback."""
+    data = dict(DEFAULTS)
     try:
-        from thor import xdg
-        base = xdg.config_home()
+        from .. import state as _state
+
+        section = _state.load_sections().get(SECTION)
+        if isinstance(section, dict):
+            for key in DEFAULTS:
+                if key in section:
+                    data[key] = bool(section[key])
+            return data
+    except Exception as e:
+        logger.debug(f"feature settings load failed: {e!r}")
+    # Legacy plugin-era INI (read-only migration source).
+    try:
+        from .. import xdg as _xdg
+
+        base = _xdg.config_home()
     except Exception:
-        if GLib is not None:
-            try:
-                base = GLib.get_user_config_dir()
-            except Exception:
-                base = os.path.expanduser("~/.config")
-        else:
-            base = os.path.expanduser("~/.config")
-    return os.path.join(base, "thor", "plugins", "feature-toggle")
-
-
-class SettingsStore:
-    def __init__(self, path: str | None = None) -> None:
-        try:
-            config_dir = _config_dir()
-            os.makedirs(config_dir, exist_ok=True)
-        except OSError:
-            logger.debug("feature-toggle config dir unavailable", exc_info=True)
-            config_dir = _config_dir()
-        self._path = path or os.path.join(config_dir, "settings.ini")
-        self._data = dict(DEFAULTS)
-        self.load()
-
-    def load(self) -> dict:
-        data = dict(DEFAULTS)
-        try:
-            if os.path.exists(self._path):
-                current_group = None
-                with open(self._path, "r", encoding="utf-8") as f:
-                    for raw in f:
-                        line = raw.strip()
-                        if not line or line.startswith(("#", ";")):
-                            continue
-                        if line.startswith("[") and line.endswith("]"):
-                            current_group = line[1:-1]
-                            continue
-                        if current_group != GROUP or "=" not in line:
-                            continue
-                        key, value = line.split("=", 1)
-                        key = key.strip()
-                        value = value.strip()
-                        if key in DEFAULTS:
-                            data[key] = value.lower() in ("1", "true", "yes", "on")
-        except Exception as e:
-            logger.debug(f"settings load failed: {e!r}")
-        self._data = data
-        return dict(self._data)
-
-    def save(self) -> None:
-        # Atomic + pid-unique tmp (see thor.csharp.settings): concurrent
-        # editors never share a tmp file; last-saver-wins on destination.
-        import tempfile
-
-        try:
-            parent = os.path.dirname(self._path) or "."
-            try:
-                os.makedirs(parent, exist_ok=True)
-            except OSError:
-                pass
-            fd, tmp = tempfile.mkstemp(dir=parent, prefix=".settings-", suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(f"[{GROUP}]\n")
-                    for key in DEFAULTS:
-                        value = self._data.get(key, DEFAULTS[key])
-                        f.write(f"{key}={'true' if value else 'false'}\n")
-                    f.flush()
-                    try:
-                        os.fsync(f.fileno())
-                    except OSError:
-                        pass
-                os.replace(tmp, self._path)
-            except Exception:
-                try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
-        except Exception as e:
-            logger.debug(f"settings save failed: {e!r}")
-
-    def get(self, key: str):
-        return self._data.get(key, DEFAULTS.get(key))
-
-    def set(self, key: str, value) -> None:
-        if key in DEFAULTS:
-            self._data[key] = bool(value)
+        base = os.path.expanduser("~/.config")
+    path = os.path.join(base, "thor", "plugins", "feature-toggle", "settings.ini")
+    try:
+        if os.path.exists(path):
+            group = None
+            with open(path, "r", encoding="utf-8") as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line or line.startswith(("#", ";")):
+                        continue
+                    if line.startswith("[") and line.endswith("]"):
+                        group = line[1:-1]
+                        continue
+                    if group != "FeatureToggle" or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    if key.strip() in DEFAULTS:
+                        data[key.strip()] = value.strip().lower() in ("1", "true", "yes", "on")
+    except Exception as e:
+        logger.debug(f"legacy feature settings read failed: {e!r}")
+    return data
 
 
 def _doc_path(doc) -> str | None:
@@ -132,8 +91,8 @@ def _doc_path(doc) -> str | None:
 
 def _close_untouched_starter_doc(window) -> None:
     try:
-        settings = getattr(window, "_thor_feature_toggle_settings", None)
-        if settings is not None and not bool(settings.get("close_untitled_on_startup")):
+        settings = getattr(window, "_thor_feature_settings", None)
+        if settings is not None and not bool(settings.get("close_untitled_on_startup", True)):
             return
     except Exception:
         pass
@@ -162,25 +121,18 @@ def _close_untouched_starter_doc(window) -> None:
         logger.debug(f"starter doc close failed: {e!r}")
 
 
-def attach(window, settings_path: str | None = None) -> bool:
+def attach(window, settings: dict | None = None) -> bool:
     """Attach startup behaviour to a ThorWindow.
 
-    - Loads the feature settings onto the window.
-    - Schedules closing of an untouched starter doc via the main loop.
-
-    Soft-fails (returns False) when window is None.
+    Stores the resolved settings dict on the window and schedules closing
+    of an untouched starter doc via the main loop. Soft-fails (returns
+    False) when window is None.
     """
     if window is None:
         return False
     try:
-        if settings_path is not None:
-            settings = SettingsStore(path=settings_path)
-        elif isinstance(getattr(window, "_thor_feature_toggle_settings", None), SettingsStore):
-            settings = window._thor_feature_toggle_settings
-        else:
-            settings = SettingsStore()
         try:
-            window._thor_feature_toggle_settings = settings  # type: ignore[attr-defined]
+            window._thor_feature_settings = settings if settings is not None else _load_settings()  # type: ignore[attr-defined]
         except Exception:
             pass
         try:
@@ -203,9 +155,8 @@ def detach(window) -> None:
     """Detach feature-toggle: drop window attributes."""
     if window is None:
         return
-    for attr in ("_thor_feature_toggle_settings", "_thor_feature_toggle_signal_ids"):
-        try:
-            if hasattr(window, attr):
-                delattr(window, attr)
-        except Exception:
-            pass
+    try:
+        if hasattr(window, "_thor_feature_settings"):
+            delattr(window, "_thor_feature_settings")
+    except Exception:
+        pass

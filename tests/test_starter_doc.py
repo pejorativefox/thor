@@ -25,7 +25,7 @@ class _Window:
         self._docs = list(docs)
         self.closed: list = []
         self._tab = object()
-        self._thor_feature_toggle_settings = settings
+        self._thor_feature_settings = settings
 
     def get_documents(self):
         return list(self._docs)
@@ -38,7 +38,7 @@ class _Window:
 
 
 def _settings(enabled=True):
-    return types.SimpleNamespace(get=lambda _k: enabled)
+    return types.SimpleNamespace(get=lambda _k, _default=None: enabled)
 
 
 def test_closes_lone_untouched_doc():
@@ -111,11 +111,11 @@ def test_attach_schedules_close_and_detaches():
         assert featuretoggle.attach(window) is True
     finally:
         featuretoggle.GLib = saved
-    assert window._thor_feature_toggle_settings is not None
+    assert window._thor_feature_settings is not None
     assert len(window.idle_fns) == 1
     # Running the scheduled idle closes the starter doc.
     for fn in window.idle_fns:
         fn()
     assert window.closed == [window._tab]
     featuretoggle.detach(window)
-    assert not hasattr(window, "_thor_feature_toggle_settings")
+    assert not hasattr(window, "_thor_feature_settings")

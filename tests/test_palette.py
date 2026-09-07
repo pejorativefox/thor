@@ -19,6 +19,10 @@ def _fake_window():
 
 def test_edit_settings_opens_default_file(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    # The palette opens the single main config file (state.toml).
+    from thor import state as state_mod
+
+    state_mod.save_state({})
     window = _fake_window()
     commands = palette.get_commands(window)
     assert commands[0]["label"] == "Edit Settings file"

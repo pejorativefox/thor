@@ -38,6 +38,12 @@ DEFAULT_STATE = {
     "word_wrap": False,
 }
 
+#: Feature settings live in TOML sections of the same state.toml file, so
+#: Thor has exactly one user config file. Flat keys above are window state;
+#: sections (e.g. ``[csharp]``, ``[features]``) are feature configuration.
+#: Each feature owns its own defaults and reads its section via
+#: :func:`load_sections`; this module just stores what it is given.
+
 
 def _legacy_path() -> str:
     try:
@@ -79,8 +85,13 @@ def _coerce(state: dict, saved: dict) -> dict:
     return state
 
 
-def _encode(state: dict) -> str:
-    """Flat TOML for the state dict; None values are omitted (no TOML null)."""
+def _encode(state: dict, sections: dict | None = None) -> str:
+    """Flat TOML for the state dict + one table per config section.
+
+    None values are omitted (no TOML null). The hand-rolled fallback
+    parser ignores tables entirely (callers then get section defaults),
+    while a real TOML parser reads them back.
+    """
     lines = []
     for k, default_val in DEFAULT_STATE.items():
         val = state.get(k, default_val)
@@ -94,6 +105,20 @@ def _encode(state: dict) -> str:
             lines.append(f"{k} = {json.dumps(val)}")
         else:
             logger.debug("state encode: skipping non-scalar %r", k)
+    for name, values in (sections or {}).items():
+        if not isinstance(values, dict) or not values:
+            continue
+        lines.append("")
+        lines.append(f"[{name}]")
+        for k, val in values.items():
+            if isinstance(val, bool):
+                lines.append(f"{k} = {'true' if val else 'false'}")
+            elif isinstance(val, int):
+                lines.append(f"{k} = {val}")
+            elif isinstance(val, str):
+                lines.append(f"{k} = {json.dumps(val)}")
+            else:
+                logger.debug("state encode: skipping non-scalar %s.%s", name, k)
     return "\n".join(lines) + "\n"
 
 def _fallback_parse(data: bytes) -> dict:
@@ -172,17 +197,52 @@ def load_state(path: str | None = None) -> dict:
     return state
 
 
-def save_state(state: dict, path: str | None = None) -> None:
-    """Save window/panel state to XDG config atomically (TOML)."""
+def load_sections(path: str | None = None) -> dict[str, dict]:
+    """Load config sections (``[features]``, ``[csharp]``, ...) from state.toml.
+
+    Returns only dict-valued top-level entries; callers merge their own
+    defaults. Without a real TOML parser (Python 3.10 without tomli) the
+    flat fallback cannot read tables, so an empty dict is returned.
+    """
+    state_path = path or xdg.state_path()
+    try:
+        with open(state_path, "rb") as f:
+            data = f.read()
+        saved = _toml_loads(data)
+        return {k: v for k, v in saved.items() if isinstance(v, dict)}
+    except OSError:
+        return {}
+    except Exception as e:
+        logger.debug("load_sections failed: %r", e, exc_info=True)
+        return {}
+
+
+def save_state(state: dict, path: str | None = None, sections: dict | None = None) -> None:
+    """Save window/panel state (+ optional config sections) atomically (TOML).
+
+    When ``sections`` is None, any sections already present in the file
+    are preserved so flat-state writers never clobber feature config.
+    """
     state_path = path or xdg.state_path()
     tmp = None
     try:
+        if sections is None:
+            try:
+                with open(state_path, "rb") as f:
+                    saved = _toml_loads(f.read())
+                sections = {
+                    name: vals
+                    for name, vals in saved.items()
+                    if isinstance(vals, dict)
+                }
+            except OSError:
+                sections = {}
         xdg.ensure_dir(os.path.dirname(state_path))
         payload = dict(DEFAULT_STATE)
         payload.update(state)
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(state_path) or ".", prefix=".state-", suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(_encode(payload))
+            f.write(_encode(payload, sections))
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, state_path)

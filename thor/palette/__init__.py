@@ -19,70 +19,28 @@ except Exception:  # headless
 from thor.fuzzy.matcher import fuzzy_match, markup_highlight
 from thor.keys import decode_key_event
 
-SETTINGS_FILENAME = "settings.toml"
-DEFAULT_SETTINGS_CONTENT = """# Thor settings (TOML).
-# Informational for now: nothing reads this file yet. Each key below shows
-# the built-in default and where it currently lives in code.
-#
-# [editor] -- hardcoded in ThorView.new_with_buffer (thor/document.py)
-# tab_width = 4
-# insert_spaces_instead_of_tabs = true
-# show_line_numbers = true
-# highlight_current_line = true
-# auto_indent = true
-# indent_on_tab = true
-# show_right_margin = false
-# monospace = true
-#
-# [theme] -- window.py prefers "atom-one-dark"; THOR_DARK=0 forces classic
-# scheme = "atom-one-dark"
-#
-# [csharp] -- currently in thor/plugins/thor-csharp settings.ini, not here
-# dotnet_executable = "dotnet"
-# roslyn_server = "~/.dotnet/tools/roslyn-language-server"
-# roslyn_log_level = "Information"
-# auto_restore = true
-# format_on_save = false
-# test_framework_filter = ""
-#
-# [features] -- currently in feature-toggle settings.ini, not here
-# hide_documents_panel = true
-# close_untitled_on_startup = true
-#
-# Env-only knobs (stay env vars): THOR_DEBUG, THOR_DARK, THOR_STYLE_DIR,
-# THOR_LANG_DIR, SHELL (terminal shell detection).
-"""
+SETTINGS_FILENAME = "state.toml"
 
 (COL_LABEL, COL_MARKUP) = range(2)
 
 
 def default_settings_path() -> str:
-    """Default settings file path (``$XDG_CONFIG_HOME/thor/settings.toml``)."""
+    """Main config file path (``$XDG_CONFIG_HOME/thor/state.toml``).
+
+    Thor has exactly one user config file: flat keys hold window state,
+    TOML sections hold feature settings (see ``thor.state``).
+    """
     try:
         from thor import xdg
 
-        base = xdg.config_home()
+        return xdg.state_path()
     except Exception:
-        base = os.path.expanduser("~/.config")
-    return os.path.join(base, "thor", SETTINGS_FILENAME)
-
-
-def ensure_settings_file(path: str | None = None) -> str:
-    """Create parent dir + empty ``{}`` settings file if missing; return path."""
-    target = path or default_settings_path()
-    try:
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        if not os.path.isfile(target):
-            with open(target, "w", encoding="utf-8") as f:
-                f.write(DEFAULT_SETTINGS_CONTENT)
-    except Exception as e:
-        logger.debug(f"ensure settings failed: {e!r}")
-    return target
+        return os.path.join(os.path.expanduser("~/.config"), "thor", SETTINGS_FILENAME)
 
 
 def open_settings(window, path: str | None = None):
-    """Open the default settings file in *window*'s editor."""
-    target = ensure_settings_file(path)
+    """Open the main config file in *window*'s editor."""
+    target = path or default_settings_path()
     try:
         return window.open_file(target, jump_to=True)
     except Exception as e:
@@ -396,7 +354,6 @@ __all__ = [
     "SETTINGS_FILENAME",
     "CommandPaletteDialog",
     "default_settings_path",
-    "ensure_settings_file",
     "open_settings",
     "get_commands",
     "filter_commands",
