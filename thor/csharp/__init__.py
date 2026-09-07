@@ -2108,6 +2108,23 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         _chain(0)
 
 
+def detach(window) -> None:
+    """Deactivate the C# feature on *window* (drop panels, timers, procs)."""
+    if window is None:
+        return
+    manager = getattr(window, "_csharp_manager", None)
+    if manager is None:
+        return
+    try:
+        manager.do_deactivate()
+    except Exception as e:
+        logger.debug(f"csharp deactivate failed: {e!r}", exc_info=True)
+    try:
+        delattr(window, "_csharp_manager")
+    except Exception:
+        pass
+
+
 def attach(window, initial_folder=None):
     """Entry point for Thor host — wire C# panels to ThorWindow.
 

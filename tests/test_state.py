@@ -182,7 +182,7 @@ def test_window_panel_state_restore_and_focus(monkeypatch):
 
             # Changing panel visibility updates panel state file
             win._side_panel.set_target_visible(True)
-            win._save_panel_state()
+            win.save_panel_state()
             reloaded = state.load_state(state_file)
             assert reloaded["side_panel_visible"] is True
         finally:
@@ -220,8 +220,8 @@ def test_window_position_and_size_persistence(monkeypatch):
             assert win._panel_state["window_width"] == 1024
             assert win._panel_state["window_height"] == 768
 
-            # Calling _save_panel_state persists current window position and size
-            win._save_panel_state()
+            # Calling save_panel_state persists current window position and size
+            win.save_panel_state()
             reloaded = state.load_state(state_file)
             assert reloaded["window_width"] == 1024
             assert reloaded["window_height"] == 768

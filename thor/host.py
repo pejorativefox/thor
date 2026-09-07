@@ -82,6 +82,39 @@ def attach_builtin_features(window, initial_folder: str | None = None) -> None:
         except Exception as e:
             logger.exception("%s attach failed: %r", name, e)
 
+def detach_builtin_features(window) -> None:
+    """Undo attach_builtin_features: detach every feature in reverse order.
+
+    Called from ThorWindow teardown so no feature leaks signal handlers,
+    timers, or child processes after the window is destroyed. Failures
+    are soft (log, never raise).
+    """
+    if window is None:
+        return
+    for name, mod in reversed([
+        ("project", _project_mod),
+        ("terminal", _terminal_mod),
+        ("csharp", _csharp_mod),
+        ("fuzzy", _fuzzy_mod),
+        ("palette", _palette_mod),
+        ("find", _find_mod),
+        ("gitdiff", _gitdiff_mod),
+        ("occurrences", _occurrences_mod),
+        ("autoreload", _autoreload_mod),
+        ("keybinds", _keybinds_mod),
+        ("panel_hider", _panel_hider_mod),
+        ("feature_toggle", _feature_toggle_mod),
+    ]):
+        fn = getattr(mod, "detach", None)
+        if fn is None:
+            continue
+        try:
+            fn(window)
+            logger.debug("%s detached", name)
+        except Exception as e:
+            logger.debug("%s detach failed: %r", name, e, exc_info=True)
+
+
     # Restore loaded panel states (visibility, sizes, active tab)
     if hasattr(window, "_restore_panel_state"):
         try:

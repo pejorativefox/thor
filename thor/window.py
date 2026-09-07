@@ -153,7 +153,7 @@ if Gtk is not None and GObject is not None:
                         self.queue_resize()
                     if n > 0:
                         self._panel_state["side_panel_visible"] = is_vis
-                        self._save_panel_state()
+                        self.save_panel_state()
                 except Exception:
                     logger.debug("side panel sync failed", exc_info=True)
 
@@ -180,7 +180,7 @@ if Gtk is not None and GObject is not None:
                         self.queue_resize()
                     if n > 0:
                         self._panel_state["bottom_panel_visible"] = is_vis
-                        self._save_panel_state()
+                        self.save_panel_state()
                 except Exception:
                     logger.debug("bottom panel sync failed", exc_info=True)
 
@@ -196,7 +196,7 @@ if Gtk is not None and GObject is not None:
                         pos = self._hpaned.get_position()
                         if pos > 80:
                             self._panel_state["side_panel_size"] = pos
-                            self._save_panel_state()
+                            self.save_panel_state()
                 except Exception:
                     pass
 
@@ -208,7 +208,7 @@ if Gtk is not None and GObject is not None:
                         bottom_h = h - self._vpaned.get_position()
                         if bottom_h > 50:
                             self._panel_state["bottom_panel_size"] = bottom_h
-                            self._save_panel_state()
+                            self.save_panel_state()
                 except Exception:
                     pass
 
@@ -221,14 +221,14 @@ if Gtk is not None and GObject is not None:
             def _on_side_page_switch(_nb, _page, page_num):
                 try:
                     self._panel_state["side_panel_active_page"] = int(page_num)
-                    self._save_panel_state()
+                    self.save_panel_state()
                 except Exception:
                     pass
 
             def _on_bottom_page_switch(_nb, _page, page_num):
                 try:
                     self._panel_state["bottom_panel_active_page"] = int(page_num)
-                    self._save_panel_state()
+                    self.save_panel_state()
                 except Exception:
                     pass
 
@@ -240,6 +240,8 @@ if Gtk is not None and GObject is not None:
             # Track tabs
             self._tabs: list = []
             self._key_handlers: list = []
+            # Document find bar; set by the find feature on attach.
+            self._searchbar = None
             self._css_provider = None
             self._save_state_timeout_id = None
             self._session_save_timeout_id = None
@@ -250,7 +252,7 @@ if Gtk is not None and GObject is not None:
                 self._save_state_timeout_id = None
                 if getattr(self, "_destroyed", False):
                     return False
-                self._save_panel_state()
+                self.save_panel_state()
                 return False
 
             def _on_configure_event(_w, _event):
@@ -286,14 +288,14 @@ if Gtk is not None and GObject is not None:
                                 self._panel_state["window_height"] = int(h)
                                 self._panel_state["window_x"] = int(x)
                                 self._panel_state["window_y"] = int(y)
-                        self._save_panel_state()
+                        self.save_panel_state()
                 except Exception:
                     pass
                 return False
 
             def _on_unmap(_w):
                 try:
-                    self._save_panel_state()
+                    self.save_panel_state()
                 except Exception:
                     pass
                 return False
@@ -320,7 +322,7 @@ if Gtk is not None and GObject is not None:
             if self._bottom_panel.get_n_items() == 0 or not bottom_vis:
                 self._bottom_panel.hide()
 
-        def _save_panel_state(self) -> None:
+        def save_panel_state(self) -> None:
             # Re-entrancy guard: notify handlers above call back in here while
             # the state dict is mid-update; nested saves would recurse.
             if getattr(self, "_saving_panel_state", False):
@@ -366,7 +368,7 @@ if Gtk is not None and GObject is not None:
                 if getattr(self, "_destroyed", False):
                     return
                 if GLib is None:
-                    self._save_session_now()
+                    self.save_session_now()
                     return
                 if getattr(self, "_session_save_timeout_id", None) is not None:
                     try:
@@ -380,7 +382,7 @@ if Gtk is not None and GObject is not None:
                     if getattr(self, "_destroyed", False):
                         return False
                     try:
-                        self._save_session_now()
+                        self.save_session_now()
                     except Exception:
                         logger.debug("session debounced save failed", exc_info=True)
                     return False
@@ -395,7 +397,7 @@ if Gtk is not None and GObject is not None:
             except Exception:
                 logger.debug("_schedule_session_save failed", exc_info=True)
 
-        def _save_session_now(self) -> None:
+        def save_session_now(self) -> None:
             """Synchronously persist open tabs for the current project root."""
             try:
                 root = self._session_root()
@@ -405,7 +407,7 @@ if Gtk is not None and GObject is not None:
 
                 _session.save_for_root(root, self)
             except Exception:
-                logger.debug("_save_session_now failed", exc_info=True)
+                logger.debug("save_session_now failed", exc_info=True)
 
         def _restore_panel_state(self) -> None:
             """Apply loaded panel state (visibility, active pages, sizes) to panels."""
@@ -471,7 +473,7 @@ if Gtk is not None and GObject is not None:
                 logger.debug("toggle_word_wrap: state store failed", exc_info=True)
             self._apply_word_wrap()
             try:
-                self._save_panel_state()
+                self.save_panel_state()
             except Exception:
                 logger.debug("toggle_word_wrap: save failed", exc_info=True)
             return new_state
@@ -493,28 +495,6 @@ if Gtk is not None and GObject is not None:
                 except Exception:
                     logger.debug("_apply_word_wrap: view failed", exc_info=True)
                     continue
-
-        def _focus_in_terminal(self) -> bool:
-            """True when keyboard focus sits inside the embedded terminal.
-
-            Ctrl+R is readline reverse-search there and must not be stolen
-            by the window-level word-wrap toggle.
-            """
-            try:
-                panel = getattr(self, "_thor_terminal_panel", None)
-                if panel is None:
-                    return False
-                focus = self.get_focus() if hasattr(self, "get_focus") else None
-                ancestor = focus
-                for _ in range(8):
-                    if ancestor is None:
-                        break
-                    if ancestor is panel:
-                        return True
-                    ancestor = ancestor.get_parent() if hasattr(ancestor, "get_parent") else None
-            except Exception:
-                logger.debug("_focus_in_terminal probe failed", exc_info=True)
-            return False
 
         def _on_destroy(self, *_args) -> None:
             # Mark first so pending idle/timeout callbacks bail instead of
@@ -538,22 +518,19 @@ if Gtk is not None and GObject is not None:
                 except Exception:
                     pass
             try:
-                self._save_panel_state()
+                self.save_panel_state()
             except Exception:
                 pass
             try:
-                self._save_session_now()
+                self.save_session_now()
             except Exception:
                 pass
             try:
-                from .project import detach as _detach_project
+                from .host import detach_builtin_features
 
-                try:
-                    _detach_project(self)
-                except Exception:
-                    logger.debug("destroy: project detach failed", exc_info=True)
+                detach_builtin_features(self)
             except Exception:
-                logger.debug("destroy: project detach import failed", exc_info=True)
+                logger.debug("destroy: feature detach failed", exc_info=True)
             prov = getattr(self, "_css_provider", None)
             if prov is not None:
                 try:
@@ -581,11 +558,25 @@ if Gtk is not None and GObject is not None:
             return self._bottom_panel
 
         def get_searchbar(self):
-            # Thor's document find bar (Ctrl+F), owned by the find feature.
-            mgr = getattr(self, "_thor_find_mgr", None)
-            if mgr is not None and getattr(mgr, "bar", None) is not None:
-                return mgr.bar
-            return getattr(self, "_find_bar", None)
+            # Thor's document find bar (Ctrl+F), pushed by the find feature.
+            return self._searchbar
+
+        def is_empty(self) -> bool:
+            """True when no editor tabs are open (notebook has no pages)."""
+            try:
+                return self._notebook.get_n_pages() == 0
+            except Exception:
+                return False
+
+        def initial_folder(self) -> str | None:
+            """Folder this window was created for, or None."""
+            initial = getattr(self, "_initial_folder", None)
+            try:
+                if initial and os.path.isdir(initial):
+                    return os.path.abspath(initial)
+            except Exception:
+                pass
+            return None
 
         def get_active_tab(self):
             n = self._notebook.get_current_page()
@@ -1304,7 +1295,9 @@ if Gtk is not None and GObject is not None:
                 # terminal's reverse-i-search.
                 if ctrl and not shift and keyname.lower() == "r":
                     try:
-                        if self._focus_in_terminal():
+                        from .terminal import focus_in_panel
+
+                        if focus_in_panel(self):
                             return False
                     except Exception:
                         logger.debug("key press terminal guard failed", exc_info=True)
@@ -1339,13 +1332,13 @@ if Gtk is not None and GObject is not None:
                 except Exception:
                     pass
             try:
-                self._save_panel_state()
+                self.save_panel_state()
             except Exception:
                 pass
             try:
                 # Save session before the unsaved-changes prompt so "Close
                 # Anyway" still restores dirty buffers via backup stash.
-                self._save_session_now()
+                self.save_session_now()
             except Exception:
                 pass
             # Prompt for unsaved? MVP: allow close, features may intercept

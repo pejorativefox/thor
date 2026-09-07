@@ -153,14 +153,9 @@ def apply_all(window) -> None:
     except Exception:
         logger.debug("font apply: views failed", exc_info=True)
     try:
-        panel = getattr(window, "_thor_terminal_panel", None)
-        notebook = getattr(panel, "notebook", None)
-        if notebook is not None:
-            for i in range(notebook.get_n_pages()):
-                try:
-                    apply_to_term(notebook.get_nth_page(i))
-                except Exception:
-                    continue
+        from .terminal import apply_fonts as _apply_term_fonts
+
+        _apply_term_fonts(window)
     except Exception:
         logger.debug("font apply: terminal failed", exc_info=True)
     try:

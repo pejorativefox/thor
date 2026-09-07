@@ -275,10 +275,10 @@ if Gtk is not None:
             # Single-window process: save this window, then let GTK tear
             # down. No fan-out over get_windows() — nothing is shared.
             try:
-                if hasattr(window, "_save_panel_state"):
-                    window._save_panel_state()
-                if hasattr(window, "_save_session_now"):
-                    window._save_session_now()
+                if hasattr(window, "save_panel_state"):
+                    window.save_panel_state()
+                if hasattr(window, "save_session_now"):
+                    window.save_session_now()
             except Exception:
                 pass
             try:
@@ -292,10 +292,10 @@ if Gtk is not None:
             try:
                 for win in list(self.get_windows()):
                     try:
-                        if hasattr(win, "_save_panel_state"):
-                            win._save_panel_state()
-                        if hasattr(win, "_save_session_now"):
-                            win._save_session_now()
+                        if hasattr(win, "save_panel_state"):
+                            win.save_panel_state()
+                        if hasattr(win, "save_session_now"):
+                            win.save_session_now()
                     except Exception:
                         continue
             except Exception:
@@ -359,9 +359,8 @@ if Gtk is not None:
                 except Exception:
                     pass
                 try:
-                    initial = getattr(win, "_initial_folder", None)
-                    if initial and os.path.isdir(initial):
-                        return os.path.abspath(initial)
+                    if hasattr(win, "initial_folder"):
+                        return win.initial_folder()
                 except Exception:
                     pass
             return None
@@ -473,7 +472,7 @@ if Gtk is not None:
                 except Exception:
                     logger.debug("_open_files_into_window: open %s failed", fp, exc_info=True)
             try:
-                if win._notebook.get_n_pages() == 0:  # type: ignore[attr-defined]
+                if win.is_empty():
                     win.create_tab(jump_to=True)
             except Exception:
                 logger.debug("_open_files_into_window: empty notebook guard failed", exc_info=True)
@@ -578,7 +577,7 @@ if Gtk is not None:
                 except Exception:
                     logger.debug("do_open: remote open failed", exc_info=True)
             try:
-                if win._notebook.get_n_pages() == 0:  # type: ignore[attr-defined]
+                if win.is_empty():
                     win.create_tab(jump_to=True)
             except Exception:
                 logger.debug("do_open: empty notebook guard failed", exc_info=True)
@@ -683,7 +682,7 @@ if Gtk is not None:
                     except Exception as e:
                         logger.warning("open %s failed: %r", fp, e)
                 try:
-                    if win._notebook.get_n_pages() == 0:  # type: ignore[attr-defined]
+                    if win.is_empty():
                         win.create_tab(jump_to=True)
                 except Exception:
                     logger.debug("_create_window: empty notebook guard failed", exc_info=True)

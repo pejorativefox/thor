@@ -1491,10 +1491,6 @@ def attach(window, initial_folder: str | None = None) -> object | None:
     except Exception:
         logger.debug("project browser store failed", exc_info=True)
     try:
-        setattr(window, "_project_browser", browser)
-    except Exception:
-        logger.debug("project browser alias store failed", exc_info=True)
-    try:
         window._thor_project_handlers = handlers  # type: ignore[attr-defined]
     except Exception:
         logger.debug("project handlers store failed", exc_info=True)
@@ -1522,14 +1518,12 @@ def get_browser(window) -> object | None:
     """Return the ProjectBrowser attached to window, or None."""
     if window is None:
         return None
-    for attr in ("_thor_project_browser", "_project_browser", "browser", "_browser"):
-        try:
-            val = getattr(window, attr, None)
-            if val is not None:
-                return val
-        except Exception:
-            logger.debug("browser attr probe failed", exc_info=True)
-            continue
+    try:
+        val = getattr(window, "_thor_project_browser", None)
+        if val is not None:
+            return val
+    except Exception:
+        logger.debug("browser attr probe failed", exc_info=True)
     try:
         side = window.get_side_panel()
         if side is not None:

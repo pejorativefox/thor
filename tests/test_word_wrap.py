@@ -100,7 +100,9 @@ def test_ctrl_r_declined_when_terminal_focused(isolated_state):
         orig_get_focus = win.get_focus
         win.get_focus = lambda: inner  # type: ignore[method-assign]
         try:
-            assert win._focus_in_terminal() is True
+            from thor.terminal import focus_in_panel
+
+            assert focus_in_panel(win) is True
             event = types.SimpleNamespace(
                 keyval=Gdk.keyval_from_name("r"),
                 state=Gdk.ModifierType.CONTROL_MASK,

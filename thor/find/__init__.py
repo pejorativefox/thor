@@ -310,7 +310,9 @@ class FindManager:
 
         self.bar = FindBar(self)
         try:
-            # pack at top of vbox above hpaned
+            # pack at top of vbox above hpaned; publish to the window so
+            # get_searchbar() has an owner-pushed reference
+            window._searchbar = self.bar
             vbox.pack_start(self.bar, False, False, 0)
             try:
                 vbox.reorder_child(self.bar, 0)
@@ -670,6 +672,11 @@ def detach(window) -> None:
                 mgr._current_doc.disconnect(mgr._buffer_handler)
             except Exception:
                 pass
+        try:
+            if getattr(window, "_searchbar", None) is mgr.bar:
+                window._searchbar = None
+        except Exception:
+            pass
         if mgr.bar is not None:
             try:
                 parent = mgr.bar.get_parent()

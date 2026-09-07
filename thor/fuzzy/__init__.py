@@ -86,49 +86,27 @@ def order_with_recent(
 
 
 def find_project_root(window) -> str | None:
-    """Locate project-mode's loaded folder root via the side panel.
+    """Locate the project feature's loaded root via the project browser.
 
-    Duck-typed: accepts any widget exposing a non-empty ``_root_dir``
-    string (ProjectBrowser). Breadth-first walk of the side-panel
-    subtree (up to 256 widgets, arbitrary depth) so reorganised
-    containers still resolve. Returns an absolute directory path or None.
+    Returns an absolute directory path or None when no project browser
+    is attached (or it has no valid root loaded).
     """
     try:
-        side = window.get_side_panel()
+        from ..project import get_browser
+
+        browser = get_browser(window)
     except Exception as e:
-        logger.debug("find_project_root: no side panel: %r", e, exc_info=True)
+        logger.debug("find_project_root: project lookup failed: %r", e, exc_info=True)
         return None
-    if side is None:
+    if browser is None:
         return None
     try:
-        children = list(side.get_children())
+        root = getattr(browser, "_root_dir", None)
     except Exception as e:
-        logger.debug("find_project_root children failed: %r", e, exc_info=True)
+        logger.debug("find_project_root attr failed: %r", e, exc_info=True)
         return None
-    queue = collections.deque(children)
-    seen_ids: set[int] = set()
-    seen = 0
-    while queue and seen < 256:
-        widget = queue.popleft()
-        seen += 1
-        try:
-            wid = id(widget)
-        except Exception:
-            wid = -1
-        if wid in seen_ids:
-            continue
-        seen_ids.add(wid)
-        try:
-            root = getattr(widget, "_root_dir", None)
-        except Exception as e:
-            logger.debug("find_project_root attr failed: %r", e, exc_info=True)
-            root = None
-        if isinstance(root, str) and root and os.path.isdir(root):
-            return os.path.abspath(root)
-        try:
-            queue.extend(widget.get_children())
-        except Exception:
-            continue
+    if isinstance(root, str) and root and os.path.isdir(root):
+        return os.path.abspath(root)
     return None
 
 

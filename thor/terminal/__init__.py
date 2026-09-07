@@ -159,6 +159,47 @@ def unique_label(base: str, existing: list[str] | set[str] | tuple) -> str:
         index += 1
     return f"{base} {index}"
 
+def apply_fonts(window) -> None:
+    """Apply the saved terminal font to every tab of this window's terminal."""
+    try:
+        panel = getattr(window, "_thor_terminal_panel", None)
+        notebook = getattr(panel, "notebook", None)
+        if notebook is None:
+            return
+        from .fonts import apply_to_term
+
+        for i in range(notebook.get_n_pages()):
+            try:
+                apply_to_term(notebook.get_nth_page(i))
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug(f"terminal font apply failed: {e!r}")
+
+
+def focus_in_panel(window) -> bool:
+    """True when keyboard focus sits inside the embedded terminal.
+
+    Ctrl+R is readline reverse-search there and must not be stolen by
+    the window-level word-wrap toggle.
+    """
+    try:
+        panel = getattr(window, "_thor_terminal_panel", None)
+        if panel is None:
+            return False
+        focus = window.get_focus() if hasattr(window, "get_focus") else None
+        ancestor = focus
+        for _ in range(8):
+            if ancestor is None:
+                break
+            if ancestor is panel:
+                return True
+            ancestor = ancestor.get_parent() if hasattr(ancestor, "get_parent") else None
+    except Exception as e:
+        logger.debug(f"terminal focus probe failed: {e!r}")
+    return False
+
+
 def handle_global_key(keyname: str, ctrl: bool, shift: bool, alt: bool) -> str | None:
     """Map a window keypress to a terminal action.
 

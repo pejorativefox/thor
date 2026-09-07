@@ -174,17 +174,20 @@ def _window_with_panel(children):
     return types.SimpleNamespace(get_side_panel=lambda: side)
 
 
-def test_find_project_root_from_side_panel():
+def test_find_project_root_from_browser():
     with tempfile.TemporaryDirectory() as tmp:
         browser = types.SimpleNamespace(_root_dir=tmp)
-        window = _window_with_panel([browser])
+        window = types.SimpleNamespace(_thor_project_browser=browser)
         assert find_project_root(window) == os.path.abspath(tmp)
 
 
 def test_find_project_root_missing():
-    assert find_project_root(_window_with_panel([])) is None
-    assert find_project_root(_window_with_panel([types.SimpleNamespace()])) is None
-    broken = types.SimpleNamespace(get_side_panel=lambda: (_ for _ in ()).throw(RuntimeError("x")))
+    assert find_project_root(None) is None
+    assert find_project_root(types.SimpleNamespace(_thor_project_browser=None)) is None
+    assert find_project_root(
+        types.SimpleNamespace(_thor_project_browser=types.SimpleNamespace())
+    ) is None
+    broken = types.SimpleNamespace(_thor_project_browser=object())
     assert find_project_root(broken) is None
 
 

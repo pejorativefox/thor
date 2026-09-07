@@ -96,13 +96,11 @@ def get_window_root(window) -> str | None:
     """
     if window is None:
         return None
-    for attr in ("_thor_project_browser", "_project_browser", "browser", "_browser"):
-        try:
-            browser = getattr(window, attr, None)
-        except Exception:
-            continue
-        if browser is None:
-            continue
+    try:
+        browser = getattr(window, "_thor_project_browser", None)
+    except Exception:
+        browser = None
+    if browser is not None:
         try:
             root = getattr(browser, "_root_dir", None)
         except Exception:
