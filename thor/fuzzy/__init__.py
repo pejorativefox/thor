@@ -2,7 +2,7 @@
 """Fuzzy file opener (Ctrl+P) for the folder loaded in project-mode.
 
 Thor-native port of ``plugins/fuzzy-finder/fuzzyfinder`` — wired via
-``attach(window)`` to a :class:`thor.window.ThorWindow` with no plugin
+``attach(window)`` to a :class:`thor.window.ThorWindow` with no plugin-era
 interface slop.
 
 Soft runtime dependency on project-mode: the project root is read from
@@ -683,54 +683,3 @@ def detach(window) -> None:
             window._thor_fuzzy_attached = False  # type: ignore[attr-defined]
         except Exception:
             pass
-
-
-# Compatibility shim for plugin tests
-class FuzzyFinderPlugin:  # type: ignore[no-redef]
-    """Shim mimicking old plugin API for tests; delegates to manager/module.
-
-    Tests instantiate without window and call _handle_global_key, _show_finder,
-    _notify_no_root, _cached_files, _remember_recent, etc. This shim provides
-    those with sensible defaults, delegating to the real manager when possible.
-    """
-
-    MAX_RECENT = MAX_RECENT
-
-    def __init__(self, window=None):
-        self.window = window
-        self._recent: list[str] = []
-        self._file_cache: dict = {}
-        self._window_key_id = None
-        # For tests that monkey-patch _show_finder / _notify_no_root
-        self._show_finder = self._show_finder_impl  # type: ignore[method-assign]
-        self._notify_no_root = self._notify_no_root_impl  # type: ignore[method-assign]
-
-    def _show_finder_impl(self):  # type: ignore[no-untyped-def]
-        # Tests monkey-patch this; default is no-op
-        pass
-
-    def _notify_no_root_impl(self):  # type: ignore[no-untyped-def]
-        pass
-
-    def _handle_global_key(self, keyname, ctrl, shift, alt):  # type: ignore[no-untyped-def]
-        # Match plugin logic: Ctrl+P shows finder, else False
-        if ctrl and not shift and not alt and (keyname or "").lower() == "p":
-            try:
-                self._show_finder()
-            except Exception:
-                pass
-            return True
-        return False
-
-    def _cached_files(self, root):  # type: ignore[no-untyped-def]
-        return self._file_cache.get(root)
-
-    def _remember_recent(self, path):  # type: ignore[no-untyped-def]
-        if path in self._recent:
-            self._recent.remove(path)
-        self._recent.insert(0, path)
-        del self._recent[MAX_RECENT:]
-
-    # Module-level helpers as static
-    find_project_root = staticmethod(find_project_root)
-    order_with_recent = staticmethod(order_with_recent)

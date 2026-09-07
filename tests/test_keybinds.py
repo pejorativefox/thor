@@ -40,83 +40,71 @@ class _FakeWindow:
         self.active = tab
 
 
-def _plugin_ns(n=3):
-    window = _FakeWindow(n)
-    cls = keybinds.KeybindsPlugin
-    ns = types.SimpleNamespace(window=window)
-    ns._doc_location = cls._doc_location
-    for name in (
-        "_step_tab",
-        "_handle_global_key",
-        "_active_editor_view",
-        "_handle_clipboard_key",
-        "_open_preferences",
-        "_on_window_key_press",
-    ):
-        if hasattr(cls, name):
-            setattr(ns, name, types.MethodType(getattr(cls, name), ns))
-    return ns, window
+def _key(window):
+    return lambda keyname, ctrl, shift, alt: keybinds.handle_global_key(
+        window, keyname, ctrl, shift, alt
+    )
 
 
 def test_ctrl_page_down_advances():
-    ns, window = _plugin_ns()
-    assert ns._handle_global_key("Page_Down", True, False, False) is True
+    window = _FakeWindow(3)
+    assert _key(window)("Page_Down", True, False, False) is True
     assert window.activated == [window.tabs[1]]
 
 
 def test_ctrl_page_up_goes_back():
-    ns, window = _plugin_ns()
+    window = _FakeWindow(3)
     window.active = window.tabs[1]
-    assert ns._handle_global_key("Page_Up", True, False, False) is True
+    assert _key(window)("Page_Up", True, False, False) is True
     assert window.activated == [window.tabs[0]]
 
 
 def test_wraparound_last_to_first():
-    ns, window = _plugin_ns()
+    window = _FakeWindow(3)
     window.active = window.tabs[2]
-    assert ns._handle_global_key("Page_Down", True, False, False) is True
+    assert _key(window)("Page_Down", True, False, False) is True
     assert window.activated == [window.tabs[0]]
 
 
 def test_wraparound_first_to_last():
-    ns, window = _plugin_ns()
-    assert ns._handle_global_key("Page_Up", True, False, False) is True
+    window = _FakeWindow(3)
+    assert _key(window)("Page_Up", True, False, False) is True
     assert window.activated == [window.tabs[2]]
 
 
 def test_keypad_variants():
-    ns, window = _plugin_ns()
-    assert ns._handle_global_key("KP_Page_Down", True, False, False) is True
-    assert ns._handle_global_key("KP_Page_Up", True, False, False) is True
+    window = _FakeWindow(3)
+    assert _key(window)("KP_Page_Down", True, False, False) is True
+    assert _key(window)("KP_Page_Up", True, False, False) is True
     assert window.activated == [window.tabs[1], window.tabs[0]]
 
 
 def test_single_tab_noop():
-    ns, window = _plugin_ns(n=1)
-    assert ns._handle_global_key("Page_Down", True, False, False) is True
+    window = _FakeWindow(1)
+    assert _key(window)("Page_Down", True, False, False) is True
     assert window.activated == []
 
 
 def test_unknown_active_falls_back_to_first():
-    ns, window = _plugin_ns()
+    window = _FakeWindow(3)
     window.active = object()
-    assert ns._handle_global_key("Page_Down", True, False, False) is True
+    assert _key(window)("Page_Down", True, False, False) is True
     assert window.activated == [window.tabs[1]]
 
 
 def test_wrong_modifiers_ignored():
-    ns, window = _plugin_ns()
-    assert ns._handle_global_key("Page_Down", True, True, False) is False
-    assert ns._handle_global_key("Page_Down", True, False, True) is False
-    assert ns._handle_global_key("Page_Down", False, False, False) is False
-    assert ns._handle_global_key("Page_Up", True, True, False) is False
+    window = _FakeWindow(3)
+    assert _key(window)("Page_Down", True, True, False) is False
+    assert _key(window)("Page_Down", True, False, True) is False
+    assert _key(window)("Page_Down", False, False, False) is False
+    assert _key(window)("Page_Up", True, True, False) is False
     assert window.activated == []
 
 
 def test_other_keys_ignored():
-    ns, window = _plugin_ns()
-    assert ns._handle_global_key("x", True, False, False) is False
-    assert ns._handle_global_key("Tab", True, False, False) is False
+    window = _FakeWindow(3)
+    assert _key(window)("x", True, False, False) is False
+    assert _key(window)("Tab", True, False, False) is False
     assert window.activated == []
 
 
@@ -128,7 +116,7 @@ def test_window_key_press_drives_handler():
         from gi.repository import Gdk
     except Exception as e:
         pytest.skip(f"no Gdk ({e})")
-    _ns, window = _plugin_ns()
+    window = _FakeWindow(3)
     event = types.SimpleNamespace(
         state=int(Gdk.ModifierType.CONTROL_MASK),
         keyval=Gdk.keyval_from_name("Page_Down"),
@@ -235,22 +223,22 @@ def _clip_ns(monkeypatch, lines, cursor=0, selection=False, editable=True,
     monkeypatch.setattr(keybinds, "_set_clipboard_text", _set)
     buf = _FakeBuffer(lines, cursor=cursor, selection=selection)
     view = _FakeView(buf, editable=editable, focus=focus)
-    ns, window = _plugin_ns()
+    window = _FakeWindow(3)
     window.get_active_view = lambda: view
-    return ns, window, view, buf, store
+    return window, view, buf, store
 
 
 def test_copy_no_selection_copies_line(monkeypatch):
-    ns, _w, _v, buf, store = _clip_ns(monkeypatch, ["hello", "world"], cursor=0)
-    assert ns._handle_global_key("c", True, False, False) is True
+    window, _v, buf, store = _clip_ns(monkeypatch, ["hello", "world"], cursor=0)
+    assert _key(window)("c", True, False, False) is True
     assert store["text"] == "hello\n"
     assert buf.lines == ["hello", "world"]
     assert buf.cursor == 0
 
 
 def test_cut_no_selection_removes_line(monkeypatch):
-    ns, _w, _v, buf, store = _clip_ns(monkeypatch, ["hello", "world"], cursor=0)
-    assert ns._handle_global_key("x", True, False, False) is True
+    window, _v, buf, store = _clip_ns(monkeypatch, ["hello", "world"], cursor=0)
+    assert _key(window)("x", True, False, False) is True
     assert store["text"] == "hello\n"
     assert buf.lines == ["world"]
     assert buf.cursor == 0
@@ -258,114 +246,50 @@ def test_cut_no_selection_removes_line(monkeypatch):
 
 def test_copy_cut_paste_with_selection_fall_through(monkeypatch):
     for key in ("c", "x", "v"):
-        ns, _w, _v, buf, store = _clip_ns(
+        window, _v, buf, store = _clip_ns(
             monkeypatch, ["hello"], cursor=0, selection=True, clip_in="hello\n")
-        assert ns._handle_global_key(key, True, False, False) is False
+        assert _key(window)(key, True, False, False) is False
     assert store["set"] == []
 
 
 def test_paste_line_block_above_current(monkeypatch):
-    ns, _w, _v, buf, _s = _clip_ns(
+    window, _v, buf, _s = _clip_ns(
         monkeypatch, ["aaa", "bbb"], cursor=1, clip_in="hello\n")
-    assert ns._handle_global_key("v", True, False, False) is True
+    assert _key(window)("v", True, False, False) is True
     assert buf.lines == ["aaa", "hello", "bbb"]
 
 
 def test_paste_inline_text_falls_through(monkeypatch):
-    ns, _w, _v, buf, _s = _clip_ns(
-        monkeypatch, ["aaa"], cursor=0, clip_in="hi")
-    assert ns._handle_global_key("v", True, False, False) is False
+    window, _v, buf, _s = _clip_ns(monkeypatch, ["aaa"], cursor=0, clip_in="hi")
+    assert _key(window)("v", True, False, False) is False
     assert buf.lines == ["aaa"]
 
 
 def test_unfocused_or_missing_view_falls_through(monkeypatch):
-    ns, _w, _v, _b, _s = _clip_ns(monkeypatch, ["aaa"], focus=False)
-    assert ns._handle_global_key("c", True, False, False) is False
-    ns2, window2 = _plugin_ns()
-    assert ns2._handle_global_key("c", True, False, False) is False
+    window, _v, _b, _s = _clip_ns(monkeypatch, ["aaa"], focus=False)
+    assert _key(window)("c", True, False, False) is False
+    window2 = _FakeWindow(3)
+    assert _key(window2)("c", True, False, False) is False
 
 
 def test_cut_last_line_deletes_text_only(monkeypatch):
-    ns, _w, _v, buf, store = _clip_ns(monkeypatch, ["aaa", "bbb"], cursor=1)
-    assert ns._handle_global_key("x", True, False, False) is True
+    window, _v, buf, store = _clip_ns(monkeypatch, ["aaa", "bbb"], cursor=1)
+    assert _key(window)("x", True, False, False) is True
     assert store["text"] == "bbb\n"
     assert buf.lines == ["aaa", ""]
 
 
-class _FakeAction:
-    def __init__(self, calls, fail=False):
-        self._calls = calls
-        self._fail = fail
-
-    def activate(self):
-        if self._fail:
-            raise RuntimeError("boom")
-        self._calls.append("EditPreferences")
-
-
-class _FakeActionGroup:
-    def __init__(self, actions):
-        self._actions = actions
-
-    def get_action(self, name):
-        return self._actions.get(name)
-
-
-class _FakeUIManager:
-    def __init__(self, groups):
-        self._groups = groups
-
-    def get_action_groups(self):
-        return self._groups
-
-
-def _prefs_ns(calls, with_action=True, fail=False):
-    ns, window = _plugin_ns()
-    actions = {"EditPreferences": _FakeAction(calls, fail=fail)} if with_action else {}
-    window.get_ui_manager = lambda: _FakeUIManager([_FakeActionGroup(actions)])
-    return ns, window
-
-
-def test_ctrl_comma_opens_preferences():
-    calls = []
-    ns, _w = _prefs_ns(calls)
-    assert ns._handle_global_key("comma", True, False, False) is True
-    assert calls == ["EditPreferences"]
-
-
-def test_ctrl_comma_missing_action_falls_through():
-    calls = []
-    ns, _w = _prefs_ns(calls, with_action=False)
-    assert ns._handle_global_key("comma", True, False, False) is False
-    assert calls == []
-
-
-def test_ctrl_comma_activate_failure_falls_through():
-    calls = []
-    ns, _w = _prefs_ns(calls, fail=True)
-    assert ns._handle_global_key("comma", True, False, False) is False
-    assert calls == []
-
-
-def test_ctrl_comma_wrong_modifiers_ignored():
-    calls = []
-    ns, _w = _prefs_ns(calls)
-    assert ns._handle_global_key("comma", True, True, False) is False
-    assert ns._handle_global_key("comma", False, False, False) is False
-    assert calls == []
-
-
 def test_ctrl_w_closes_active_tab_when_editor_focused(monkeypatch):
-    ns, window, _v, _b, _s = _clip_ns(monkeypatch, ["hello"], focus=True)
+    window, _v, _b, _s = _clip_ns(monkeypatch, ["hello"], focus=True)
     closed = []
     window.close_tab = lambda tab: closed.append(tab)
-    assert ns._handle_global_key("w", True, False, False) is True
+    assert _key(window)("w", True, False, False) is True
     assert closed == [window.active]
 
 
 def test_ctrl_w_falls_through_when_unfocused(monkeypatch):
-    ns, window, _v, _b, _s = _clip_ns(monkeypatch, ["hello"], focus=False)
+    window, _v, _b, _s = _clip_ns(monkeypatch, ["hello"], focus=False)
     closed = []
     window.close_tab = lambda tab: closed.append(tab)
-    assert ns._handle_global_key("w", True, False, False) is False
+    assert _key(window)("w", True, False, False) is False
     assert closed == []

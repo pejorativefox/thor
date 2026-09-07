@@ -35,9 +35,9 @@ def test_decode_key_event_decodes_modifiers():
 
 
 def test_ownership_constants_cover_sibling_keys():
-    # Keys owned by sibling window-key handlers must be declined by window
+    # Keys owned by sibling feature key handlers must be declined by window
     # and keybinds so the owning handler runs.
-    assert {"p", "b", "j", "e", "f", "g", "grave", "quoteleft", "asciigrave", "`"} == keys.CTRL_PLUGIN_KEYS
-    assert {"p", "t", "w", "g"} == keys.CTRL_SHIFT_PLUGIN_KEYS
-    # Window/global ctrl keys are intentionally NOT in the plugin sets.
-    assert not {"s", "o", "n", "w", "c", "x", "v", "comma"} & keys.CTRL_PLUGIN_KEYS
+    assert {"p", "b", "j", "e", "f", "g", "grave", "quoteleft", "asciigrave", "`"} == keys.CTRL_FEATURE_KEYS
+    assert {"p", "t", "w", "g"} == keys.CTRL_SHIFT_FEATURE_KEYS
+    # Window/global ctrl keys are intentionally NOT in the feature sets.
+    assert not {"s", "o", "n", "w", "c", "x", "v"} & keys.CTRL_FEATURE_KEYS

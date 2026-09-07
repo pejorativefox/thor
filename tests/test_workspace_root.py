@@ -38,7 +38,7 @@ def test_startup_dir_tracks_launch_directory():
     with tempfile.TemporaryDirectory() as tmp:
         try:
             os.chdir(tmp)
-            assert thorcsharp.CSharpDevKitPlugin._startup_dir() == tmp
+            assert thorcsharp.CSharpManager._startup_dir() == tmp
         finally:
             os.chdir(previous)
 
@@ -48,7 +48,7 @@ def test_open_doc_dir_fallback():
 
     import thor.csharp as thorcsharp
 
-    cls = thorcsharp.CSharpDevKitPlugin
+    cls = thorcsharp.CSharpManager
     loc = types.SimpleNamespace(
         has_uri_scheme=lambda s: s == "file",
         get_path=lambda: "/repo/src/App/Program.cs",

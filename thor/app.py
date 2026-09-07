@@ -643,14 +643,14 @@ if Gtk is not None:
                 logger.exception("_create_window: ThorWindow construction failed")
                 raise
             file_lines = file_lines or {}
-            # Bake built-in panels/plugins first so the project root
+            # Bake built-in panels/features first so the project root
             # resolves before restore.
             try:
-                from .host import attach_builtin_plugins
+                from .host import attach_builtin_features
 
-                attach_builtin_plugins(win, initial_folder=folder)
+                attach_builtin_features(win, initial_folder=folder)
             except Exception as e:
-                logger.exception("plugin attach failed: %r", e)
+                logger.exception("feature attach failed: %r", e)
             # Restore per-project session, merging explicit files on top.
             # Single-window process: no flush of other windows, nothing is
             # shared in memory.
@@ -839,7 +839,7 @@ if Gtk is not None:
                 dlg = Gtk.AboutDialog(transient_for=win, modal=True)  # type: ignore[attr-defined]
                 dlg.set_program_name("Thor")
                 dlg.set_version(__version__)
-                dlg.set_comments("GtkSourceView editor — plugins baked in.\nNo Peas. Just Thor.")
+                dlg.set_comments("GtkSourceView editor — features baked in.\nNo Peas. Just Thor.")
                 dlg.set_website("https://github.com/thor-editor/thor")
                 dlg.set_license_type(Gtk.License.MIT_X11)
                 dlg.run()

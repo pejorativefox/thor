@@ -206,8 +206,6 @@ def test_mark_colors_single_sourced_from_diffparse():
 
 
 def test_deleted_pixbuf_is_transparent_cornered_triangle():
-    if not hasattr(gitinline, "GitInlineDiffPlugin"):
-        import pytest; pytest.skip("GitInlineDiffPlugin not available in thor")
     assert gitinline.deleted_pixbuf("bogus") is None
     pixbuf = gitinline.deleted_pixbuf(diffparse.COLOR_DELETED)
     if gitinline.GdkPixbuf is None:
@@ -232,11 +230,9 @@ def test_deleted_pixbuf_is_transparent_cornered_triangle():
 
 
 def test_configure_marks_never_sets_line_background():
-    if not hasattr(gitinline, "GitInlineDiffPlugin"):
-        import pytest; pytest.skip("GitInlineDiffPlugin not available in thor")
     import inspect
 
-    source = inspect.getsource(gitinline.GitInlineDiffPlugin._configure_marks)
+    source = inspect.getsource(gitinline.GitDiffManager._configure_marks)
     assert "set_background" not in source
     assert "set_pixbuf" in source
 
@@ -318,7 +314,7 @@ class _FakeDoc:
 
 
 def _plugin():
-    plugin = gitinline.GitInlineDiffPlugin.__new__(gitinline.GitInlineDiffPlugin)
+    plugin = gitinline.GitDiffManager.__new__(gitinline.GitDiffManager)
     plugin._signal_ids = []
     plugin._mark_views_configured = set()
     plugin._generations = {}
@@ -387,8 +383,6 @@ def test_buffer_matches_head_defers_to_git():
 
 
 def test_query_thread_prefers_disk_when_buffer_matches_it():
-    if not hasattr(gitinline, "GitInlineDiffPlugin"):
-        import pytest; pytest.skip("GitInlineDiffPlugin not available in thor")
     if not _has_git():
         pytest.skip("no git")
     with tempfile.TemporaryDirectory() as tmp:
@@ -400,7 +394,7 @@ def test_query_thread_prefers_disk_when_buffer_matches_it():
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         subprocess.run(["git", "commit", "-m", "init"], cwd=tmp, check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-        plugin = gitinline.GitInlineDiffPlugin()
+        plugin = gitinline.GitDiffManager()
         results = []
         plugin._apply_result = lambda p, r, g: results.append(r) or False  # type: ignore[method-assign]
 
@@ -441,8 +435,6 @@ def _display():
 
 
 def test_apply_result_removes_stale_marks():
-    if not hasattr(gitinline, "GitInlineDiffPlugin"):
-        import pytest; pytest.skip("GitInlineDiffPlugin not available in thor")
     """Empty refresh must clear previously applied marks.
 
     Needs a display; skipped headless. Regression: remove_source_marks
@@ -457,7 +449,7 @@ def test_apply_result_removes_stale_marks():
     buf.create_source_mark(
         None, diffparse.CATEGORY_ADDED, buf.get_iter_at_line(0))
     assert len(buf.get_source_marks_at_line(0, None)) == 1
-    plugin = gitinline.GitInlineDiffPlugin()
+    plugin = gitinline.GitDiffManager()
     plugin._generations = {"/tmp/x.cs": 0}
     plugin._find_doc = lambda path: buf  # type: ignore[method-assign]
     plugin._configure_marks = lambda doc: None  # type: ignore[method-assign]

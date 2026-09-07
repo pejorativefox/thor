@@ -177,7 +177,7 @@ def line_start_offset(text: str, line: int) -> int:
 # ---------------------------------------------------------------------------
 
 #: VSCode-style commit characters for C#. GtkSource4 has no native
-#: commit-char API, so the plugin best-effort accepts on these in the
+#: commit-char API, so the feature best-effort accepts on these in the
 #: fallback popup; the GtkSource path documents the gap (see gscompletion).
 COMMIT_CHARACTERS = (".", "(", "[", "<", ";", ",")
 

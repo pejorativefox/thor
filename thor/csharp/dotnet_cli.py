@@ -143,7 +143,7 @@ def run_streaming(
     when one pipe's buffer fills. Every line arrives as ``'stdout'``.
 
     Returns a :class:`StreamingHandle`; call :meth:`cancel` to stop the
-    child (used by the plugin deactivate path to reap orphans).
+    child (used by the feature deactivate path to reap orphans).
     """
     handle = StreamingHandle()
     def _worker() -> None:

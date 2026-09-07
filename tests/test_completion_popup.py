@@ -198,7 +198,7 @@ def test_view_forwarding_without_popup_focus():
         pytest.skip("no display")
     import thor.csharp as thorcsharp
 
-    plugin = thorcsharp.CSharpDevKitPlugin.__new__(thorcsharp.CSharpDevKitPlugin)
+    plugin = thorcsharp.CSharpManager.__new__(thorcsharp.CSharpManager)
     popup = _popup()
     plugin.completion_popup = popup
     plugin._completion_forward = None
@@ -222,7 +222,7 @@ def test_forwarding_ignored_when_hidden():
         pytest.skip("no display")
     import thor.csharp as thorcsharp
 
-    plugin = thorcsharp.CSharpDevKitPlugin.__new__(thorcsharp.CSharpDevKitPlugin)
+    plugin = thorcsharp.CSharpManager.__new__(thorcsharp.CSharpManager)
     popup = _popup()  # never shown
     plugin.completion_popup = popup
     plugin._completion_forward = None

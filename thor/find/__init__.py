@@ -694,10 +694,4 @@ def detach(window) -> None:
             pass
 
 
-def create_manager(window):
-    """Test helper: return object with _handle_global_key style if needed."""
-    # For compatibility with other managers' test shims — find uses window key handler directly.
-    return attach(window)
-
-
-__all__ = ["FindManager", "FindBar", "attach", "detach", "create_manager", "TAG_MATCH", "TAG_CURRENT"]
+__all__ = ["FindManager", "FindBar", "attach", "detach", "TAG_MATCH", "TAG_CURRENT"]

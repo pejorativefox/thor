@@ -227,7 +227,7 @@ FakeGtkSource = types.SimpleNamespace(
 
 
 def _plugin():
-    plugin = ar.AutoReloadPlugin.__new__(ar.AutoReloadPlugin)
+    plugin = ar.AutoReloadManager.__new__(ar.AutoReloadManager)
     plugin._signal_ids = []
     plugin._monitors = {}
     plugin._pending = {}

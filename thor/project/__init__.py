@@ -71,132 +71,6 @@ def _pick_icon(candidates: tuple[str, ...]) -> str:
                 continue
     return candidates[0]
 
-#: Legacy one-shot handoff once written by the `thor-code` launcher.
-#: No longer used: each window is its own process and receives its folder
-#: straight from its own argv. The read/write helpers below remain for
-#: backward compatibility (and their tests) but are not consulted at
-#: startup.
-PENDING_FILENAME = "pending-root"
-PENDING_MAX_AGE_S = 60
-
-#: Top-level names that mark a directory as a project worth auto-loading.
-_PROJECT_MARKER_NAMES = frozenset(
-    {
-        ".git",
-        "package.json",
-        "Cargo.toml",
-        "go.mod",
-        "CMakeLists.txt",
-        "Makefile",
-        "meson.build",
-        "pyproject.toml",
-    }
-)
-
-#: Top-level suffixes that mark a directory as a project.
-_PROJECT_MARKER_SUFFIXES = (".sln", ".slnx", ".csproj")
-
-def _cache_dir() -> str:
-    try:
-        from thor import xdg
-        return os.path.join(xdg.cache_home(), "thor", "project-mode")
-    except Exception:
-        if GLib is not None:
-            try:
-                return os.path.join(GLib.get_user_cache_dir(), "thor", "project-mode")
-            except Exception:
-                logger.debug("user cache dir lookup failed", exc_info=True)
-        return os.path.join(os.path.expanduser("~/.cache"), "thor", "project-mode")
-
-def pending_root_path(base: str | None = None) -> str:
-    """Path of the one-shot `thor-code` handoff file."""
-    return os.path.join(base or _cache_dir(), PENDING_FILENAME)
-
-def write_pending_root(folder: str, path: str | None = None) -> str | None:
-    """Record launch intent for the next window activation. Returns the path."""
-    target = path or pending_root_path()
-    try:
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target) or ".", prefix=".pending-", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(os.path.abspath(folder) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, target)
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-    except OSError as e:
-        logger.debug(f"pending write failed: {e!r}")
-        return None
-    return target
-
-def take_pending_root(
-    path: str | None = None,
-    max_age_s: int = PENDING_MAX_AGE_S,
-    now: float | None = None,
-) -> str | None:
-    """Read and consume the `thor-code` handoff (fresh entries only).
-
-    Stale/empty handoffs are consumed (deleted) so one launch never
-    affects a later window. A handoff naming a non-directory is invalid
-    intent (transient mount, typo) — it is left in place, never
-    destroyed, so a later activation can still honor it. Returns the
-    realpath, or None when missing/stale/empty/not-a-directory.
-    """
-    target = path or pending_root_path()
-    try:
-        mtime = os.path.getmtime(target)
-    except OSError:
-        logger.debug(f"pending handoff missing: {target}", exc_info=True)
-        return None
-    try:
-        with open(target, encoding="utf-8") as f:
-            content = f.read().strip()
-    except OSError:
-        logger.debug(f"pending handoff unreadable: {target}", exc_info=True)
-        return None
-    moment = time.time() if now is None else now
-    if moment - mtime > max_age_s or not content:
-        try:
-            os.unlink(target)
-        except OSError:
-            logger.debug(f"pending consume failed: {target}", exc_info=True)
-        return None
-    try:
-        validated = os.path.realpath(content)
-    except Exception:
-        logger.debug(f"pending handoff invalid content: {content!r}", exc_info=True)
-        return None
-    if not os.path.isdir(validated):
-        return None
-    try:
-        os.unlink(target)
-    except OSError:
-        logger.debug(f"pending consume failed: {target}", exc_info=True)
-    return validated
-
-def has_project_markers(folder: str) -> bool:
-    """True when folder's top level looks like a project (no recursion)."""
-    try:
-        entries = os.scandir(folder)
-    except OSError:
-        logger.debug(f"project markers scan failed for {folder}", exc_info=True)
-        return False
-    with entries:
-        for entry in entries:
-            name = entry.name
-            lowered = name.lower()
-            if lowered in _PROJECT_MARKER_NAMES:
-                return True
-            if lowered.endswith(_PROJECT_MARKER_SUFFIXES):
-                return True
-    return False
-
 def is_unsafe_root(folder: str) -> bool:
     """True for $HOME, anything above it, or / — never auto-load these."""
     try:
@@ -206,30 +80,6 @@ def is_unsafe_root(folder: str) -> bool:
     except Exception:
         logger.debug(f"unsafe-root check failed for {folder}", exc_info=True)
         return True
-
-def resolve_startup_root(
-    cwd: str | None, pending: str | None
-) -> tuple[str, str | None]:
-    """Decide the startup folder: ("load"|"prompt"|"none", dir|None).
-
-    Explicit `thor-code` intent (pending) with no markers still prompts;
-    an incidental cwd without markers (or any unsafe root reached via cwd)
-    is silently ignored so plain launch from $HOME never crawls or nags.
-    """
-    if pending:
-        candidate = os.path.abspath(pending)
-        if not os.path.isdir(candidate):
-            return ("none", None)
-        if is_unsafe_root(candidate) or not has_project_markers(candidate):
-            return ("prompt", candidate)
-        return ("load", candidate)
-    if cwd:
-        candidate = os.path.abspath(cwd)
-        if not os.path.isdir(candidate) or is_unsafe_root(candidate):
-            return ("none", None)
-        if has_project_markers(candidate):
-            return ("load", candidate)
-    return ("none", None)
 
 #: Debounce for file-monitor-triggered git refreshes. The old 500ms value
 #: let a `.git/index` touch from our own `git status` re-fire the monitor
@@ -1588,44 +1438,12 @@ def _open_in_thor(window, path: str) -> None:
     except Exception as e:
         logger.debug(f"open file failed for {path}: {e!r}")
 
-def _consume_pending() -> str | None:
-    """Consume pending-root handoff, checking Thor cache locations."""
-    candidates: list[str] = []
-    try:
-        base_env = os.environ.get("XDG_CACHE_HOME")
-        if base_env:
-            candidates.append(os.path.join(base_env, "thor", "project-mode", PENDING_FILENAME))
-        else:
-            home_cache = os.path.expanduser("~/.cache")
-            candidates.append(os.path.join(home_cache, "thor", "project-mode", PENDING_FILENAME))
-        if GLib is not None:
-            try:
-                glib_cache = GLib.get_user_cache_dir()
-                candidates.append(os.path.join(glib_cache, "thor", "project-mode", PENDING_FILENAME))
-            except Exception:
-                logger.debug("glib cache dir lookup failed", exc_info=True)
-    except Exception:
-        logger.debug("pending candidates failed", exc_info=True)
-    for cand in candidates:
-        try:
-            val = take_pending_root(cand)
-            if val:
-                return val
-        except Exception:
-            logger.debug("pending candidate failed", exc_info=True)
-            continue
-    try:
-        return take_pending_root()
-    except Exception:
-        return None
-
 def attach(window, initial_folder: str | None = None) -> object | None:
     """Attach ProjectBrowser to a ThorWindow.
 
     Creates a ProjectBrowser, wires open-file to window.create_tab_from_location,
     adds it to window.get_side_panel(), and loads the given initial folder.
-    Each window is its own process, so there is no pending-root handoff and
-    no cross-window retargeting. Returns the browser or None headless.
+    Returns the browser or None headless.
     """
     if Gtk is None or window is None:
         return None
@@ -1689,9 +1507,6 @@ def attach(window, initial_folder: str | None = None) -> object | None:
         _session.attach_window_session(window)
     except Exception:
         logger.debug("session attach failed", exc_info=True)
-    # Isolated processes: the folder comes straight from this process's
-    # own argv (initial_folder). The legacy pending-root handoff file is
-    # no longer written or consumed.
     folder_to_load: str | None = initial_folder
     if folder_to_load and os.path.isdir(folder_to_load):
         try:

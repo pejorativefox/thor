@@ -25,8 +25,13 @@ def test_thor_open_parse_location():
     assert thor_open.parse_location("foo.cs(10:5)") == ("foo.cs", 10, 5)
 
 
-def test_thor_open_passes_absolute_path_and_line():
+def test_thor_open_passes_absolute_path_and_line(monkeypatch):
     thor_open = _load_thor_open()
+    # Never talk to a live editor instance: the IPC forward would open the
+    # file in a real running Thor window instead of exercising the spawn path.
+    import thor.ipc as thor_ipc
+
+    monkeypatch.setattr(thor_ipc, "find_live_root_for_path", lambda *_a, **_k: None)
     calls = []
     saved_popen = thor_open.subprocess.Popen
     thor_open.subprocess.Popen = lambda argv, **kw: calls.append((argv, kw))

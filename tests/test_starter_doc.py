@@ -1,23 +1,14 @@
 """Closing Thor's blank starter doc (headless, fake window/docs)."""
 
-import os
-import sys
 import types
 
-import pytest
-
-
 import thor.feature_toggle as featuretoggle
-IS_THOR = True  # thor standalone, skip plugin UI tests
-
-HAVE_PLUGIN = hasattr(getattr(featuretoggle, "FeatureTogglePlugin", None), "_close_untouched_starter_doc")
 
 
 class _Doc:
     def __init__(self, untouched=True, location=None):
         self._untouched = untouched
         self._location = location
-        self._file_raises = location is None
 
     def is_untouched(self):
         return self._untouched
@@ -30,10 +21,11 @@ class _Doc:
 
 
 class _Window:
-    def __init__(self, docs):
+    def __init__(self, docs, settings=None):
         self._docs = list(docs)
         self.closed: list = []
         self._tab = object()
+        self._thor_feature_toggle_settings = settings
 
     def get_documents(self):
         return list(self._docs)
@@ -45,40 +37,23 @@ class _Window:
         self.closed.append(tab)
 
 
-def _ns(window, setting=True):
-    cls = featuretoggle.FeatureTogglePlugin
-    settings = types.SimpleNamespace(get=lambda _k: setting)
-    return types.SimpleNamespace(window=window, settings=settings)
+def _settings(enabled=True):
+    return types.SimpleNamespace(get=lambda _k: enabled)
 
 
 def test_closes_lone_untouched_doc():
-    if IS_THOR:
-        import pytest; pytest.skip("plugin UI test not applicable for thor")
-    if not hasattr(featuretoggle, "FeatureTogglePlugin"):
-        import pytest; pytest.skip("FeatureTogglePlugin not available in thor")
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
     window = _Window([_Doc(untouched=True)])
-    featuretoggle.FeatureTogglePlugin._close_untouched_starter_doc(_ns(window))
+    featuretoggle._close_untouched_starter_doc(window)
     assert window.closed == [window._tab]
 
 
 def test_keeps_touched_doc():
-    if not hasattr(featuretoggle, "FeatureTogglePlugin"):
-        import pytest; pytest.skip("FeatureTogglePlugin not available in thor")
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
     window = _Window([_Doc(untouched=False)])
-    featuretoggle.FeatureTogglePlugin._close_untouched_starter_doc(_ns(window))
+    featuretoggle._close_untouched_starter_doc(window)
     assert window.closed == []
 
 
 def test_keeps_doc_with_location():
-    if not hasattr(featuretoggle, "FeatureTogglePlugin"):
-        import pytest; pytest.skip("FeatureTogglePlugin not available in thor")
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
-
     class _Located(_Doc):
         def get_location(self):
             return types.SimpleNamespace(
@@ -87,44 +62,60 @@ def test_keeps_doc_with_location():
             )
 
     window = _Window([_Located(untouched=True)])
-    featuretoggle.FeatureTogglePlugin._close_untouched_starter_doc(_ns(window))
+    featuretoggle._close_untouched_starter_doc(window)
     assert window.closed == []
 
 
 def test_keeps_multiple_docs():
-    if not hasattr(featuretoggle, "FeatureTogglePlugin"):
-        import pytest; pytest.skip("FeatureTogglePlugin not available in thor")
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
     window = _Window([_Doc(untouched=True), _Doc(untouched=True)])
-    featuretoggle.FeatureTogglePlugin._close_untouched_starter_doc(_ns(window))
+    featuretoggle._close_untouched_starter_doc(window)
     assert window.closed == []
 
 
 def test_respects_setting_off():
-    if not hasattr(featuretoggle, "FeatureTogglePlugin"):
-        import pytest; pytest.skip("FeatureTogglePlugin not available in thor")
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
-    window = _Window([_Doc(untouched=True)])
-    featuretoggle.FeatureTogglePlugin._close_untouched_starter_doc(_ns(window, setting=False))
+    window = _Window([_Doc(untouched=True)], settings=_settings(False))
+    featuretoggle._close_untouched_starter_doc(window)
     assert window.closed == []
 
 
 def test_close_failure_is_silent():
-    if not hasattr(featuretoggle, "FeatureTogglePlugin"):
-        import pytest; pytest.skip("FeatureTogglePlugin not available in thor")
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
-
     class _FailWindow(_Window):
         def close_tab(self, tab):
             raise RuntimeError("nope")
 
     window = _FailWindow([_Doc(untouched=True)])
-    featuretoggle.FeatureTogglePlugin._close_untouched_starter_doc(_ns(window))
+    featuretoggle._close_untouched_starter_doc(window)
     assert window.closed == []
 
 
 def test_close_untitled_default_on():
     assert featuretoggle.DEFAULTS.get("close_untitled_on_startup") is True
+
+
+def test_attach_schedules_close_and_detaches():
+    """attach() stores settings + schedules the starter-doc close via idle."""
+
+    class _IdleWindow(_Window):
+        def __init__(self, docs):
+            super().__init__(docs)
+            self.idle_fns = []
+
+        def schedule(self, fn):
+            self.idle_fns.append(fn)
+            return 1
+
+    window = _IdleWindow([_Doc(untouched=True)])
+    saved = featuretoggle.GLib
+    featuretoggle.GLib = types.SimpleNamespace(idle_add=window.schedule)
+    try:
+        assert featuretoggle.attach(window) is True
+    finally:
+        featuretoggle.GLib = saved
+    assert window._thor_feature_toggle_settings is not None
+    assert len(window.idle_fns) == 1
+    # Running the scheduled idle closes the starter doc.
+    for fn in window.idle_fns:
+        fn()
+    assert window.closed == [window._tab]
+    featuretoggle.detach(window)
+    assert not hasattr(window, "_thor_feature_toggle_settings")

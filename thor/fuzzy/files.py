@@ -14,7 +14,7 @@ import os
 import subprocess
 
 #: Directories never descended into. Mirrors project-mode's prune set so
-#: both plugins agree on what "the project" contains.
+#: both features agree on what "the project" contains.
 _PRUNE_DIRS = frozenset(
     {
         ".git",

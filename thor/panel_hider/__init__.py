@@ -22,8 +22,6 @@ except Exception:  # headless / missing typelib
 
 from ..keys import decode_key_event
 
-PANES_SCHEMA = "org.x.editor.preferences.ui"
-
 # ---------------------------------------------------------------------------
 # Helpers (window-aware, preserve original names/logic)
 # ---------------------------------------------------------------------------
@@ -32,15 +30,6 @@ def _safe(fn):
     try:
         return fn()
     except Exception:
-        return None
-
-def _panes_settings():
-    if Gio is None:
-        return None
-    try:
-        return Gio.Settings.new(PANES_SCHEMA)
-    except Exception as e:
-        logger.debug(f"panes settings unavailable: {e!r}")
         return None
 
 def _panel_widget(window, which: str):
@@ -61,13 +50,6 @@ def _pane_visible(window, which: str) -> bool:
             return bool(widget.get_visible())
         except Exception:
             pass
-    settings = _panes_settings()
-    if settings is not None:
-        try:
-            key = "side-panel-visible" if which == "side" else "bottom-panel-visible"
-            return bool(settings.get_boolean(key))
-        except Exception:
-            pass
     return True
 
 def _set_panes(window, side=None, bottom=None) -> None:
@@ -83,58 +65,14 @@ def _set_panes(window, side=None, bottom=None) -> None:
                     widget.set_visible(bool(value))
             except Exception as e:
                 logger.debug(f"panes widget failed: {e!r}")
-    settings = _panes_settings()
-    if settings is None:
-        return
-    try:
-        if side is not None:
-            settings.set_boolean("side-panel-visible", bool(side))
-        if bottom is not None:
-            settings.set_boolean("bottom-panel-visible", bool(bottom))
-    except Exception as e:
-        logger.debug(f"panes set failed: {e!r}")
-
-def _set_pane_action(window, name: str, visible: bool) -> bool:
-    try:
-        manager = window.get_ui_manager()
-        if manager is None:
-            return False
-        groups = manager.get_action_groups() or []
-    except Exception as e:
-        logger.debug(f"pane action lookup failed: {e!r}")
-        return False
-    for group in groups:
-        try:
-            action = group.get_action(name)
-        except Exception:
-            continue
-        if action is None:
-            continue
-        try:
-            action.set_active(bool(visible))
-            return True
-        except Exception:
-            try:
-                action.activate()
-                return True
-            except Exception as e:
-                logger.debug(f"pane action activate failed: {e!r}")
-                return False
-    return False
 
 def _hide_all_panels(window) -> None:
     logger.debug("panels: hiding side + bottom")
-    ok_side = _set_pane_action(window, "ViewSidePane", False)
-    ok_bottom = _set_pane_action(window, "ViewBottomPane", False)
-    if not ok_side or not ok_bottom:
-        _set_panes(window, side=None if ok_side else False, bottom=None if ok_bottom else False)
+    _set_panes(window, side=False, bottom=False)
 
 def _show_all_panels(window) -> None:
     logger.debug("panels: showing side + bottom")
-    ok_side = _set_pane_action(window, "ViewSidePane", True)
-    ok_bottom = _set_pane_action(window, "ViewBottomPane", True)
-    if not ok_side or not ok_bottom:
-        _set_panes(window, side=None if ok_side else True, bottom=None if ok_bottom else True)
+    _set_panes(window, side=True, bottom=True)
 
 def _toggle_all_panels(window) -> None:
     """Two-way focus-mode toggle: hide when anything is visible, else show."""
@@ -155,7 +93,7 @@ def _toggle_all_panels(window) -> None:
 def _pane_geometry(window, which: str):
     try:
         widget = _panel_widget(window, which)
-        if widget is None or Gio is None:
+        if widget is None:
             return None
         paned = widget.get_parent()
         pos = int(paned.get_position())
@@ -173,9 +111,8 @@ def _pane_geometry(window, which: str):
         except Exception:
             pane_number = 0
         try:
-            state = Gio.Settings.new("org.x.editor.state.window")
-            key = "bottom-panel-size" if which == "bottom" else "side-panel-size"
-            saved = int(state.get_int(key))
+            key = "bottom_panel_size" if which == "bottom" else "side_panel_size"
+            saved = int((getattr(window, "_panel_state", None) or {}).get(key) or 0)
         except Exception:
             saved = 0
         if saved <= 0:
@@ -225,21 +162,18 @@ def _delayed_pane_size(window, which: str) -> bool:
         logger.debug(f"panes delayed size failed: {e!r}")
     return False
 
-def _toggle_pane(window, action_name: str, which: str) -> None:
+def _toggle_pane(window, which: str) -> None:
     target = not _pane_visible(window, which)
-    if _set_pane_action(window, action_name, target):
-        logger.debug(f"panels: {which} toggled via menu action")
-    else:
-        logger.debug(f"panels: {which} -> {target} (fallback)")
-        _set_panes(window, **{which: target})
+    logger.debug(f"panels: {which} -> {target}")
+    _set_panes(window, **{which: target})
     if target:
         _ensure_pane_size(window, which)
 
 def _toggle_bottom_panel(window) -> None:
-    _toggle_pane(window, "ViewBottomPane", "bottom")
+    _toggle_pane(window, "bottom")
 
 def _toggle_side_panel(window) -> None:
-    _toggle_pane(window, "ViewSidePane", "side")
+    _toggle_pane(window, "side")
 
 def _handle_global_key(window, keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
     # Owned keys only: Ctrl+B/J/E without shift/alt. Everything else —
@@ -320,26 +254,3 @@ def detach(window) -> None:
                 window._thor_panel_hider_key_id = None  # type: ignore[attr-defined]
             except Exception:
                 pass
-
-
-# Compatibility shim for plugin tests
-class PanelHiderPlugin:  # type: ignore[no-redef]
-    PANES_SCHEMA = PANES_SCHEMA
-    _safe = staticmethod(_safe)
-    _panel_widget = staticmethod(_panel_widget)
-    _pane_visible = staticmethod(_pane_visible)
-    _panes_settings = staticmethod(_panes_settings)
-    _set_panes = staticmethod(_set_panes)
-    _set_pane_action = staticmethod(_set_pane_action)
-    _pane_geometry = staticmethod(_pane_geometry)
-    _fix_pane_size = staticmethod(_fix_pane_size)
-    _ensure_pane_size = staticmethod(_ensure_pane_size)
-    _delayed_pane_size = staticmethod(_delayed_pane_size)
-    _toggle_pane = staticmethod(_toggle_pane)
-    _hide_all_panels = staticmethod(_hide_all_panels)
-    _show_all_panels = staticmethod(_show_all_panels)
-    _toggle_all_panels = staticmethod(_toggle_all_panels)
-    _toggle_bottom_panel = staticmethod(_toggle_bottom_panel)
-    _toggle_side_panel = staticmethod(_toggle_side_panel)
-    _handle_global_key = staticmethod(_handle_global_key)
-    _on_window_key_press = staticmethod(_on_window_key_press)

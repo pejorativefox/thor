@@ -904,5 +904,3 @@ def detach(window) -> None:
         pass
 
 
-# Backwards-compat alias (not required but harmless)
-GitInlineDiffPlugin = GitDiffManager

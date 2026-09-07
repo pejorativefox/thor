@@ -9,7 +9,7 @@ Handles the Roslyn-specific startup quirks:
   publishDiagnostics to the UI layer.
 
 GTK integration is deliberately narrow: an optional `ui_dispatch` callable
-(default: call directly) lets the plugin marshal callbacks onto the GTK main
+(default: call directly) lets the feature marshal callbacks onto the GTK main
 loop with GLib.idle_add while unit tests inject a synchronous dispatcher.
 """
 

@@ -13,7 +13,6 @@ except Exception:  # headless / no gi
 
 GROUP = "FeatureToggle"
 DEFAULTS = {
-    "hide_documents_panel": True,
     "close_untitled_on_startup": True,
 }
 
@@ -131,97 +130,6 @@ def _doc_path(doc) -> str | None:
         return None
 
 
-def _find_documents_widget(widget, skip: tuple = ()):
-    try:
-        if any(widget is owned for owned in skip):
-            return None
-    except Exception:
-        pass
-    try:
-        if type(widget).__name__ == "ThorDocumentsPanel":
-            return widget
-    except Exception:
-        return None
-    try:
-        children = widget.get_children()
-    except Exception:
-        return None
-    for child in children or []:
-        found = _find_documents_widget(child, skip)
-        if found is not None:
-            return found
-    return None
-
-
-def _safe(window, fn):
-    try:
-        return fn()
-    except Exception as e:
-        logger.debug(f"window accessor failed: {e!r}")
-        return None
-
-
-def _hide_documents_panel(window) -> None:
-    try:
-        if getattr(window, "_thor_feature_toggle_hidden", None) is not None:
-            return
-        settings = getattr(window, "_thor_feature_toggle_settings", None)
-        try:
-            enabled = bool(settings.get("hide_documents_panel")) if settings else True
-        except Exception:
-            enabled = True
-        if not enabled:
-            return
-        side = _safe(window, lambda: window.get_side_panel())
-        if side is None:
-            return
-        found = _find_documents_widget(side)
-        if found is None:
-            return
-        try:
-            removed = bool(side.remove_item(found))
-        except Exception:
-            removed = False
-        if not removed:
-            try:
-                side.remove(found)
-                removed = True
-            except Exception as e:
-                logger.debug(f"documents panel remove failed: {e!r}")
-                return
-        # store hidden widget on window
-        try:
-            window._thor_feature_toggle_hidden = found  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        logger.debug("documents panel hidden")
-    except Exception as e:
-        logger.debug(f"documents panel hide failed: {e!r}")
-
-
-def _restore_documents_panel(window) -> None:
-    try:
-        widget = getattr(window, "_thor_feature_toggle_hidden", None)
-        try:
-            window._thor_feature_toggle_hidden = None  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        if widget is None:
-            return
-        side = _safe(window, lambda: window.get_side_panel())
-        if side is None:
-            return
-        try:
-            side.add_item(widget, "Documents", "text-x-generic")
-        except Exception:
-            try:
-                side.add(widget)
-            except Exception as e:
-                logger.debug(f"documents panel restore failed: {e!r}")
-    except Exception as e:
-        logger.debug(f"documents panel restore failed: {e!r}")
-
-
 def _close_untouched_starter_doc(window) -> None:
     try:
         settings = getattr(window, "_thor_feature_toggle_settings", None)
@@ -255,67 +163,29 @@ def _close_untouched_starter_doc(window) -> None:
 
 
 def attach(window, settings_path: str | None = None) -> bool:
-    """Attach feature-toggle behaviour to a ThorWindow.
+    """Attach startup behaviour to a ThorWindow.
 
-    - Hides the Documents side-panel if enabled.
-    - Schedules closing of an untouched starter doc.
-    - Hooks ``tab-added`` / ``active-tab-changed`` to re-hide panel.
+    - Loads the feature settings onto the window.
+    - Schedules closing of an untouched starter doc via the main loop.
 
-    Soft-fails (returns False) when window is None or headless.
+    Soft-fails (returns False) when window is None.
     """
     if window is None:
         return False
     try:
-        # Use provided path for tests if given, otherwise default.
         if settings_path is not None:
             settings = SettingsStore(path=settings_path)
+        elif isinstance(getattr(window, "_thor_feature_toggle_settings", None), SettingsStore):
+            settings = window._thor_feature_toggle_settings
         else:
-            # If window already has settings (re-attach), reuse.
-            existing = getattr(window, "_thor_feature_toggle_settings", None)
-            if isinstance(existing, SettingsStore):
-                settings = existing
-            else:
-                settings = SettingsStore()
+            settings = SettingsStore()
         try:
             window._thor_feature_toggle_settings = settings  # type: ignore[attr-defined]
         except Exception:
             pass
         try:
-            window._thor_feature_toggle_hidden = getattr(window, "_thor_feature_toggle_hidden", None)
-            if window._thor_feature_toggle_hidden is None:
-                window._thor_feature_toggle_hidden = None  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        # Ensure signal list exists.
-        if not hasattr(window, "_thor_feature_toggle_signal_ids"):
-            try:
-                window._thor_feature_toggle_signal_ids = []  # type: ignore[attr-defined]
-            except Exception:
-                pass
-
-        _hide_documents_panel(window)
-
-        # Schedule starter-doc close.
-        try:
             if GLib is not None and hasattr(GLib, "idle_add"):
-                try:
-                    GLib.idle_add(lambda: (_close_untouched_starter_doc(window), False)[1])
-                except Exception:
-                    _close_untouched_starter_doc(window)
-                # Flush pending idle for headless/mocked windows where no main loop runs.
-                # In real Thor main loop this is harmless (idle already queued, iteration
-                # will run it immediately); in headless tests it ensures deterministic close.
-                try:
-                    ctx = GLib.MainContext.default()  # type: ignore[union-attr]
-                    # Iterate pending sources without blocking.
-                    while ctx.pending():
-                        ctx.iteration(False)
-                except Exception:
-                    # If iteration not available, fall back to direct call as safety.
-                    try:
-                        _close_untouched_starter_doc(window)
-                    except Exception:
-                        pass
+                GLib.idle_add(lambda: (_close_untouched_starter_doc(window), False)[1])
             else:
                 _close_untouched_starter_doc(window)
         except Exception:
@@ -323,21 +193,6 @@ def attach(window, settings_path: str | None = None) -> bool:
                 _close_untouched_starter_doc(window)
             except Exception:
                 pass
-        # Idempotent: a second attach() must not stack duplicate handlers.
-        try:
-            already_wired = bool(getattr(window, "_thor_feature_toggle_signal_ids", None))
-        except Exception:
-            already_wired = False
-        if not already_wired:
-            for signal in ("active-tab-changed", "tab-added"):
-                try:
-                    handler_id = window.connect(signal, lambda *_a, w=window: _hide_documents_panel(w))
-                    try:
-                        window._thor_feature_toggle_signal_ids.append((window, handler_id))  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
-                except Exception as e:
-                    logger.debug(f"connect {signal} failed: {e!r}")
         return True
     except Exception as e:
         logger.debug(f"attach failed: {e!r}")
@@ -345,36 +200,12 @@ def attach(window, settings_path: str | None = None) -> bool:
 
 
 def detach(window) -> None:
-    """Detach feature-toggle: restore panel and disconnect signals."""
+    """Detach feature-toggle: drop window attributes."""
     if window is None:
         return
-    try:
-        _restore_documents_panel(window)
-    except Exception:
-        pass
-    # Disconnect signals.
-    try:
-        ids = list(getattr(window, "_thor_feature_toggle_signal_ids", []) or [])
-        for obj, handler_id in ids:
-            try:
-                obj.disconnect(handler_id)  # type: ignore[attr-defined]
-            except Exception:
-                pass
+    for attr in ("_thor_feature_toggle_settings", "_thor_feature_toggle_signal_ids"):
         try:
-            window._thor_feature_toggle_signal_ids = []  # type: ignore[attr-defined]
+            if hasattr(window, attr):
+                delattr(window, attr)
         except Exception:
             pass
-    except Exception:
-        pass
-
-
-# Compatibility shim for plugin tests
-class FeatureTogglePlugin:  # type: ignore[no-redef]
-    DEFAULTS = DEFAULTS
-    GROUP = GROUP
-    _find_documents_widget = staticmethod(_find_documents_widget)
-    _hide_documents_panel = staticmethod(_hide_documents_panel)
-    _restore_documents_panel = staticmethod(_restore_documents_panel)
-    _close_untouched_starter_doc = staticmethod(_close_untouched_starter_doc)
-    _doc_path = staticmethod(_doc_path)
-    _safe = staticmethod(_safe)

@@ -1,7 +1,7 @@
 # Thor — GtkSourceView editor
 """Thor editor package.
 
-Direct GtkSourceView editor that bakes plugins in-process.
+Direct GtkSourceView editor with features baked in-process.
 No libpeas, no typelib indirection.
 """
 from __future__ import annotations

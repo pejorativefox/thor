@@ -1,7 +1,7 @@
 """Per-view integration: doc sync, shortcuts, context menu, hover, completion triggers.
 
 GTK-only; imported lazily by __init__. All LSP round-trips are delegated to
-the plugin via GObject signals so this module never touches the network.
+the feature via GObject signals so this module never touches the network.
 """
 
 from __future__ import annotations
@@ -408,7 +408,7 @@ else:
                 return False
             if is_identifier_char(char):
                 # Auto-popup while typing words, like VSCode: from the first
-                # character. The plugin refilters locally when visible and
+                # character. The completion feature refilters locally when visible and
                 # requests once when hidden.
                 try:
                     prefix, _start = prefix_at(buffer_text(doc), cursor_offset(doc))

@@ -6,10 +6,10 @@ same fragile dance: mask ``event.state`` against the default modifier mask,
 name the keyval, then compute ctrl/shift/alt booleans — each wrapped in its
 own ``Gtk/Gdk is None`` guard and ``try/except``.  That decode logic now
 lives here, plus the single source of truth for which keys are owned by
-which sibling key handlers.
+which feature key handlers.
 
 Key ownership (window-level ``key-press-event`` handlers; first handler to
-return True wins, in connect order — see ``host.attach_builtin_plugins``):
+return True wins, in connect order — see ``host.attach_builtin_features``):
 
 - window (``ThorWindow._on_key_press``): Ctrl+S/O/N (+Shift), Ctrl+Q
   (window close via the delete-event path — one process owns one window,
@@ -21,7 +21,7 @@ return True wins, in connect order — see ``host.attach_builtin_plugins``):
 - keybinds: Ctrl+PageUp/Down, Ctrl+C/X/V line hijack, Ctrl+W (document tab
   close, only when an editor is focused), Ctrl+,.
 
-The ``*_PLUGIN_KEYS`` sets are the union of keys owned by *other* handlers:
+The ``*_FEATURE_KEYS`` sets are the union of keys owned by *other* features:
 window and keybinds check these and return False so the owning handler runs.
 
 Headless-safe: imports degrade to None and ``decode_key_event`` returns None
@@ -41,7 +41,7 @@ except Exception:  # headless
 
 # Ctrl (no shift) keys owned by sibling window-key handlers.  window and
 # keybinds both decline these so the owning handler runs.
-CTRL_PLUGIN_KEYS = frozenset({
+CTRL_FEATURE_KEYS = frozenset({
     "p",        # fuzzy finder
     "b", "j", "e",  # panel_hider
     "f", "g",   # find
@@ -49,7 +49,7 @@ CTRL_PLUGIN_KEYS = frozenset({
 })
 
 # Ctrl+Shift keys owned by siblings.  Declined by window._on_key_press.
-CTRL_SHIFT_PLUGIN_KEYS = frozenset({
+CTRL_SHIFT_FEATURE_KEYS = frozenset({
     "p",        # palette
     "t", "w",   # terminal (new / close tab)
     "g",        # find previous
@@ -78,8 +78,8 @@ def decode_key_event(event):
 
 
 __all__ = [
-    "CTRL_PLUGIN_KEYS",
-    "CTRL_SHIFT_PLUGIN_KEYS",
+    "CTRL_FEATURE_KEYS",
+    "CTRL_SHIFT_FEATURE_KEYS",
     "decode_key_event",
     "Gtk",
     "Gdk",

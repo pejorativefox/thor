@@ -1,20 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Thor keybinds — tab cycling, line copy/cut/paste, tab close, preferences.
+"""Thor keybinds — tab cycling, line copy/cut/paste, tab close.
 
 Key ownership (return True ONLY when handled, else False so the next
 window ``key-press-event`` handler runs):
 
 - This module: Ctrl+PageUp/PageDown (tab cycle), Ctrl+C/X/V whole-line
   hijack (only when the focused editable view has NO selection), Ctrl+W
-  (close the active document tab — only when an editor is focused),
-  Ctrl+, (preferences).
+  (close the active document tab — only when an editor is focused).
 - panel_hider: Ctrl+B/J/E (panel toggles).
 - terminal: Ctrl+Shift+T (new tab), Ctrl+` (two-way focus/reveal),
   Ctrl+Shift+W (close terminal tab — NOT window close).
 - fuzzy: Ctrl+P.  palette: Ctrl+Shift+P.  find: Ctrl+F, Ctrl+G(+Shift), F3.
 
-Keys owned by sibling handlers are declined via ``thor.keys.CTRL_PLUGIN_KEYS``
-(see that module for the canonical ownership table).
+Keys owned by sibling features are declined via
+``thor.keys.CTRL_FEATURE_KEYS`` (see that module for the canonical
+ownership table).
 
 Headless-safe: pure helpers importable without a display.
 """
@@ -34,7 +34,7 @@ try:
 except Exception:  # headless
     Gtk = Gdk = None  # type: ignore[assignment]
 
-from ..keys import CTRL_PLUGIN_KEYS, decode_key_event
+from ..keys import CTRL_FEATURE_KEYS, decode_key_event
 
 def _get_clipboard_text():
     """Return clipboard text or None. Uses Gtk.Clipboard.get_default."""
@@ -111,37 +111,6 @@ def _step_tab(window, direction: int) -> None:
         window.set_active_tab(tabs[(idx + direction) % len(tabs)])
     except Exception as e:
         logger.debug("tab step failed: %r", e, exc_info=True)
-
-def _open_preferences(window) -> bool:
-    """Try to activate EditPreferences action; soft-fail if no UI manager."""
-    try:
-        ui_manager = window.get_ui_manager()
-    except Exception as e:
-        logger.debug("preferences ui-manager failed: %r", e, exc_info=True)
-        return False
-    if ui_manager is None:
-        logger.debug("preferences ui-manager not available")
-        return False
-    try:
-        groups = ui_manager.get_action_groups()
-    except Exception as e:
-        logger.debug("preferences action-groups failed: %r", e, exc_info=True)
-        return False
-    for group in groups or ():
-        try:
-            action = group.get_action("EditPreferences")
-        except Exception:
-            action = None
-        if action is None:
-            continue
-        try:
-            action.activate()
-        except Exception as e:
-            logger.debug("preferences activate failed: %r", e, exc_info=True)
-            return False
-        return True
-    logger.debug("preferences action EditPreferences not found")
-    return False
 
 def _active_editor_view(window):
     """Return focused editable view or None."""
@@ -225,80 +194,18 @@ def _handle_clipboard_key(lowered, view) -> bool:
         logger.debug("clipboard key failed: %r", e, exc_info=True)
         return False
 
-def handle_global_key(*args, **kwargs) -> bool:
-    """Handle global key. Signature: handle_global_key(window, keyname, ctrl, shift, alt).
-
-    Also supports legacy 4-arg form handle_global_key(keyname, ctrl, shift, alt)
-    with window=None for headless tests.
-    """
-    window = None
-    keyname = ""
-    ctrl = False
-    shift = False
-    alt = False
-
-    # Positional dispatch
-    if len(args) == 5:
-        window, keyname, ctrl, shift, alt = args  # type: ignore[assignment]
-    elif len(args) == 4:
-        # Could be legacy (keyname, ctrl, shift, alt) or (window, keyname, ctrl, shift) missing alt
-        # Detect: if first arg is string-like and second is bool, it's legacy
-        if isinstance(args[0], str) and isinstance(args[1], bool):
-            keyname, ctrl, shift, alt = args  # type: ignore[assignment]
-            window = None
-        else:
-            # Assume (window, keyname, ctrl, shift) with alt default
-            window, keyname, ctrl, shift = args  # type: ignore[assignment]
-            alt = False
-    elif len(args) == 3:
-        if isinstance(args[0], str):
-            keyname, ctrl, shift = args  # type: ignore[assignment]
-            window = None
-            alt = False
-        else:
-            window, keyname, ctrl = args  # type: ignore[assignment]
-            shift = False
-            alt = False
-    elif len(args) == 2:
-        window, keyname = args  # type: ignore[assignment]
-        ctrl = shift = alt = False
-    elif len(args) == 1:
-        # single keyname
-        keyname = args[0]  # type: ignore[assignment]
-        window = None
-    elif len(args) == 0:
-        # kwargs path
-        window = kwargs.pop("window", None)
-        keyname = kwargs.pop("keyname", kwargs.pop("key", ""))
-        ctrl = kwargs.pop("ctrl", False)
-        shift = kwargs.pop("shift", False)
-        alt = kwargs.pop("alt", False)
-    else:
-        # too many
-        return False
-
-    # Also allow kwargs override when positional used with kwargs
-    if "window" in kwargs:
-        window = kwargs["window"]
-    if "keyname" in kwargs or "key" in kwargs:
-        keyname = kwargs.get("keyname", kwargs.get("key", keyname))
-    if "ctrl" in kwargs:
-        ctrl = kwargs["ctrl"]
-    if "shift" in kwargs:
-        shift = kwargs["shift"]
-    if "alt" in kwargs:
-        alt = kwargs["alt"]
-
+def handle_global_key(window, keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
+    """Handle a window-level key. Returns True only when handled."""
     # Owned Ctrl-only keys below. Everything else — notably the sibling
-    # plugin keys in CTRL_PLUGIN_KEYS (panel_hider, fuzzy, find, terminal)
+    # feature keys in CTRL_FEATURE_KEYS (panel_hider, fuzzy, find, terminal)
     # — must fall through (False) so the owning handler runs. Returning
     # True here would swallow those keys.
     if not (ctrl and not shift and not alt):
         return False
     lowered = (keyname or "").lower()
-    # Explicitly decline keys owned by sibling handlers, even though the
+    # Explicitly decline keys owned by sibling features, even though the
     # generic guard above already rejects most (shifted) variants.
-    if lowered in CTRL_PLUGIN_KEYS:
+    if lowered in CTRL_FEATURE_KEYS:
         return False
     if lowered == "w":
         # Ctrl+W closes the active document tab, but only when the focus
@@ -337,11 +244,6 @@ def handle_global_key(*args, **kwargs) -> bool:
         if view is None:
             return False
         return _handle_clipboard_key(lowered, view)
-    if lowered == "comma":
-        logger.debug("key: Ctrl+comma preferences")
-        if window is None:
-            return False
-        return _open_preferences(window)
     return False
 
 def _on_window_key_press(window, event) -> bool:
@@ -398,62 +300,15 @@ def detach(window) -> None:
         except Exception:
             pass
 
-def create_manager(window):
-    """Compat helper: return object with _handle_global_key bound to window.
-
-    Useful for tests that previously did:
-        ns = SimpleNamespace(window=window)
-        ns._handle_global_key = MethodType(cls._handle_global_key, ns)
-    Now: mgr = create_manager(window); mgr.handle("c", True, False, False)
-    Also exposes window-bound _handle_global_key for drop-in.
-    """
-    import types
-
-    mgr = types.SimpleNamespace(window=window)
-    # bind handle_global_key with window already applied
-    def _bound(keyname, ctrl, shift, alt):
-        return handle_global_key(window, keyname, ctrl, shift, alt)
-
-    mgr._handle_global_key = _bound  # type: ignore[attr-defined]
-    mgr.handle_global_key = _bound  # type: ignore[attr-defined]
-    # also expose helpers bound to window
-    mgr._step_tab = lambda direction: _step_tab(window, direction)  # type: ignore[attr-defined]
-    mgr._open_preferences = lambda: _open_preferences(window)  # type: ignore[attr-defined]
-    mgr._active_editor_view = lambda: _active_editor_view(window)  # type: ignore[attr-defined]
-    mgr._handle_clipboard_key = _handle_clipboard_key  # type: ignore[attr-defined]
-    mgr._doc_location = _doc_location  # type: ignore[attr-defined]
-    mgr.attach = lambda: attach(window)  # type: ignore[attr-defined]
-    mgr.detach = lambda: detach(window)  # type: ignore[attr-defined]
-    return mgr
-
 __all__ = [
     "attach",
     "detach",
     "handle_global_key",
-    "create_manager",
     "_get_clipboard_text",
     "_set_clipboard_text",
     "_doc_location",
     "_step_tab",
-    "_open_preferences",
     "_active_editor_view",
     "_handle_clipboard_key",
     "_on_window_key_press",
 ]
-
-
-# Compatibility shim for plugin tests (thor standalone)
-class KeybindsPlugin:  # type: ignore[no-redef]
-    """Shim exposing plugin-like API for tests; delegates to module functions."""
-
-    _doc_location = staticmethod(_doc_location)
-    _step_tab = staticmethod(_step_tab)
-    _open_preferences = staticmethod(_open_preferences)
-    _active_editor_view = staticmethod(_active_editor_view)
-    _handle_clipboard_key = staticmethod(_handle_clipboard_key)
-    _on_window_key_press = staticmethod(_on_window_key_press)
-
-    def _handle_global_key(self, keyname, ctrl, shift, alt):  # type: ignore[no-untyped-def]
-        # handle_global_key in thor takes window as first arg
-        win = getattr(self, "window", None)
-        return handle_global_key(win, keyname, ctrl, shift, alt)

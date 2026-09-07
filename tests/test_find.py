@@ -161,8 +161,6 @@ def test_chrome_removed_from_window():
     app = Gtk.Application(application_id="dev.thor.testchrome")
     win = ThorWindow(app, initial_folder=None)
     try:
-        assert win.get_statusbar() is None
-        assert not hasattr(win, "_statusbar")
         assert win.get_menubar() is None
         assert getattr(win, "_menubar", None) is None
 

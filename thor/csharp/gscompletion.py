@@ -1,6 +1,6 @@
 """Roslyn completion via GtkSource's built-in framework (the wordcompletion way).
 
-The bundled wordcompletion plugin builds no popup at all: it registers a
+The bundled GtkSourceView wordcompletion provider builds no popup at all: it registers a
 GtkSourceCompletionProvider and the editor's own completion window handles
 focus, filtering, navigation and commit. This module does the same for
 Roslyn items, which fixes the focus-stealing class of bugs structurally:
@@ -12,7 +12,7 @@ VSCode-parity notes (GtkSource4 constraints):
   (or an empty unfinished list) and completes the in-flight request via
   ``context.add_proposals(..., True)`` when Roslyn answers.
 * Trigger ownership belongs to the framework (interactive + user
-  requested). The plugin must NOT prefetch on every keystroke; it only
+  requested). The provider must NOT prefetch on every keystroke; it only
   forces ``completion.start()`` on explicit ``Ctrl+Space``.
 * Filtering while typing is done by the framework against each
   proposal's ``text`` (``filterText`` or label). The cache is reused
@@ -250,7 +250,7 @@ class _RoslynCompletionProviderBase:
 
     """GtkSource completion provider backed by Roslyn textDocument/completion.
 
-    Callbacks (wired by the plugin, kept off GTK so they stay testable):
+    Callbacks (wired by the feature, kept off GTK so they stay testable):
       is_ready() -> bool
       resolve_path(buffer) -> str | None (None for non-C# buffers)
       send_request(method, params, callback) -> id | None

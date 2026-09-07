@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""C# DevKit plugin for Thor.
+"""C# DevKit feature for Thor.
 
 Solution explorer, test explorer, build output, Roslyn LSP
 (completion, hover, go-to-definition, references, format, code actions,
@@ -63,7 +63,7 @@ try:
 except Exception:  # headless / missing typelib
     logger.exception("GUI imports failed; using headless fallback")
     try:
-        logger.error("IMPORT-FALLBACK: GUI imports failed, dummy plugin active. "
+        logger.error("IMPORT-FALLBACK: GUI imports failed, dummy feature active. "
                      "Likely missing python3-gi or typelib.")
     except Exception:
         pass
@@ -2108,10 +2108,6 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         _chain(0)
 
 
-# Compatibility alias for original plugin name
-CSharpDevKitPlugin = CSharpManager
-
-
 def attach(window, initial_folder=None):
     """Entry point for Thor host — wire C# panels to ThorWindow.
 
@@ -2132,7 +2128,7 @@ def attach(window, initial_folder=None):
             window._csharp_manager = manager  # type: ignore[attr-defined]
         except Exception:
             pass
-        # Activate (mirrors Peas plugin lifecycle)
+        # Activate the manager
         try:
             manager.do_activate()
         except Exception as e:
@@ -2142,13 +2138,6 @@ def attach(window, initial_folder=None):
             except Exception:
                 logger.debug(f"attach activate failed: {e!r}")
                 logger.exception("attach activate failed")
-        # Keep reference to avoid GC; attach to window dict
-        try:
-            if not hasattr(window, "_thor_plugins"):
-                window._thor_plugins = {}  # type: ignore[attr-defined]
-            window._thor_plugins["csharp"] = manager  # type: ignore[attr-defined]
-        except Exception:
-            pass
         return manager
     except Exception as e:
         logger.debug(f"attach failed: {e!r}")

@@ -202,11 +202,6 @@ def roslyn_log_dir() -> str:
     return log_dir()
 
 
-def pending_root_path() -> str:
-    """Path to the pending project root handoff file in XDG cache."""
-    return os.path.join(cache_home(), "thor", "project-mode", "pending-root")
-
-
 def state_path() -> str:
     """Path to the persistent window/panel state TOML file in XDG config."""
     path = os.path.join(config_home(), "thor", "state.toml")
@@ -236,7 +231,6 @@ __all__ = [
     "log_dir",
     "marker_log_path",
     "roslyn_log_dir",
-    "pending_root_path",
     "state_path",
     "sessions_dir",
 ]

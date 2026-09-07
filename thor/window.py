@@ -20,7 +20,7 @@ except Exception:  # headless
 
 from .panel import ThorPanel
 from .document import ThorDocument, ThorTab
-from .keys import CTRL_PLUGIN_KEYS, CTRL_SHIFT_PLUGIN_KEYS, decode_key_event
+from .keys import CTRL_FEATURE_KEYS, CTRL_SHIFT_FEATURE_KEYS, decode_key_event
 from .state import load_state as load_panel_state, save_state as save_panel_state
 
 if Gtk is not None and GObject is not None:
@@ -304,7 +304,7 @@ if Gtk is not None and GObject is not None:
             except Exception:
                 pass
 
-            # Key handling (panel-hider style, etc. plugins hook here too)
+            # Key handling (panel-hider and other features hook here too)
             self.connect("key-press-event", self._on_key_press)
             self.connect("delete-event", self._on_delete_event)
             self.connect("destroy", self._on_destroy)
@@ -518,7 +518,7 @@ if Gtk is not None and GObject is not None:
         def _on_destroy(self, *_args) -> None:
             # Mark first so pending idle/timeout callbacks bail instead of
             # emitting on a dead window. Real teardown: project monitors,
-            # CssProvider. Plugin detaches beyond project use their own
+            # CssProvider. Feature detaches beyond project use their own
             # detach() via their owners.
             try:
                 self._destroyed = True
@@ -579,30 +579,12 @@ if Gtk is not None and GObject is not None:
         def get_bottom_panel(self):
             return self._bottom_panel
 
-        def get_statusbar(self):
-            return None
-
         def get_searchbar(self):
-            # Thor's document find bar (Ctrl+F)
+            # Thor's document find bar (Ctrl+F), owned by the find feature.
             mgr = getattr(self, "_thor_find_mgr", None)
             if mgr is not None and getattr(mgr, "bar", None) is not None:
                 return mgr.bar
             return getattr(self, "_find_bar", None)
-
-        def get_message_bus(self):
-            return None
-
-        def get_state(self) -> int:
-            return 0
-
-        def get_group(self):
-            return None
-
-        def get_ui_manager(self):
-            return None
-
-        def _thor_window_get_notebook(self):  # for plugins that poke private
-            return self._notebook
 
         def get_active_tab(self):
             n = self._notebook.get_current_page()
@@ -1262,8 +1244,8 @@ if Gtk is not None and GObject is not None:
                 logger.debug("emit tab state failed", exc_info=True)
 
         def _on_key_press(self, widget, event) -> bool:
-            # Thor-native save handling (XFCE traditional). Plugins also listen.
-            # Plugin-owned keys fall through explicitly (return False) so this
+            # Thor-native save handling (XFCE traditional). Features also listen.
+            # Feature-owned keys fall through explicitly (return False) so this
             # handler can never swallow them, regardless of later edits below:
             # panel_hider Ctrl+B/J/E, fuzzy Ctrl+P, find Ctrl+F/G, palette
             # Ctrl+Shift+P, terminal Ctrl+` and Ctrl+Shift+T/W.
@@ -1272,9 +1254,9 @@ if Gtk is not None and GObject is not None:
                 return False
             keyname, ctrl, shift, _alt = parts
             if ctrl and keyname:
-                if not shift and keyname in CTRL_PLUGIN_KEYS:
+                if not shift and keyname in CTRL_FEATURE_KEYS:
                     return False
-                if shift and keyname in CTRL_SHIFT_PLUGIN_KEYS:
+                if shift and keyname in CTRL_SHIFT_FEATURE_KEYS:
                     return False
             try:
                 if ctrl and not shift and keyname == "s":
@@ -1320,8 +1302,8 @@ if Gtk is not None and GObject is not None:
                     return True
             except Exception:
                 logger.debug("key press save failed", exc_info=True)
-            # Let plugins / window handle other shortcuts; keep default propagation
-            # Panel-hider: Ctrl+B etc will be handled by plugin signal handlers attached to window.
+            # Let features / window handle other shortcuts; keep default propagation
+            # Panel-hider: Ctrl+B etc are handled by feature signal handlers attached to window.
             # Do not swallow.
             return False
 
@@ -1348,7 +1330,7 @@ if Gtk is not None and GObject is not None:
                 self._save_session_now()
             except Exception:
                 pass
-            # Prompt for unsaved? MVP: allow close, plugins may intercept
+            # Prompt for unsaved? MVP: allow close, features may intercept
             unsaved = self.get_unsaved_documents()
             if not unsaved:
                 return False

@@ -21,7 +21,6 @@ def test_xdg_defaults_without_env():
         assert xdg.icon_hicolor_dir("256x256", "apps") == os.path.join(home, ".local", "share", "icons", "hicolor", "256x256", "apps")
         assert xdg.log_dir() == os.path.join(home, ".local", "state", "thor", "logs")
         assert xdg.marker_log_path() == os.path.join(home, ".local", "state", "thor", "logs", "thor-csharp.log")
-        assert xdg.pending_root_path() == os.path.join(home, ".cache", "thor", "project-mode", "pending-root")
     finally:
         os.environ.clear()
         os.environ.update(saved_env)
@@ -55,7 +54,6 @@ def test_xdg_env_overrides():
             assert xdg.desktop_dir() == os.path.join(os.path.abspath(d_data), "applications")
             assert xdg.log_dir() == os.path.join(os.path.abspath(d_state), "thor", "logs")
             assert xdg.marker_log_path() == os.path.join(os.path.abspath(d_state), "thor", "logs", "thor-csharp.log")
-            assert xdg.pending_root_path() == os.path.join(os.path.abspath(d_cache), "thor", "project-mode", "pending-root")
 
             s_dirs = xdg.styles_dirs()
             assert os.path.abspath(d_styles) in s_dirs

@@ -1,4 +1,4 @@
-"""Unit tests for the fuzzy-finder plugin (headless, no GTK)."""
+"""Unit tests for the fuzzy finder (headless, no GTK)."""
 
 import os
 import shutil
@@ -13,7 +13,6 @@ from thor.fuzzy import files as files_mod
 from thor.fuzzy import find_project_root
 from thor.fuzzy.matcher import FuzzyIndex, fuzzy_find, fuzzy_match, fuzzy_score
 import thor.fuzzy as fuzzyfinder
-IS_THOR = True  # thor standalone, skip plugin UI tests
 
 
 def test_score_orders_tight_over_gappy():
@@ -166,10 +165,6 @@ def test_list_files_respects_gitignore():
 
 
 def test_list_files_bad_root():
-    if IS_THOR:
-        import pytest; pytest.skip("plugin UI test not applicable for thor")
-    if not hasattr(thor.fuzzy, "FuzzyFinderPlugin"):
-        import pytest; pytest.skip("FuzzyFinderPlugin not available in thor")
     assert files_mod.list_project_files("") == []
     assert files_mod.list_project_files("/no/such/dir-xyz") == []
 
@@ -180,10 +175,6 @@ def _window_with_panel(children):
 
 
 def test_find_project_root_from_side_panel():
-    if IS_THOR:
-        import pytest; pytest.skip("plugin UI test not applicable for thor")
-    if not hasattr(thor.fuzzy, "FuzzyFinderPlugin"):
-        import pytest; pytest.skip("FuzzyFinderPlugin not available in thor")
     with tempfile.TemporaryDirectory() as tmp:
         browser = types.SimpleNamespace(_root_dir=tmp)
         window = _window_with_panel([browser])
@@ -191,10 +182,6 @@ def test_find_project_root_from_side_panel():
 
 
 def test_find_project_root_missing():
-    if IS_THOR:
-        import pytest; pytest.skip("plugin UI test not applicable for thor")
-    if not hasattr(thor.fuzzy, "FuzzyFinderPlugin"):
-        import pytest; pytest.skip("FuzzyFinderPlugin not available in thor")
     assert find_project_root(_window_with_panel([])) is None
     assert find_project_root(_window_with_panel([types.SimpleNamespace()])) is None
     broken = types.SimpleNamespace(get_side_panel=lambda: (_ for _ in ()).throw(RuntimeError("x")))
@@ -202,40 +189,16 @@ def test_find_project_root_missing():
 
 
 def test_global_key_ctrl_p_shows_finder():
-    if IS_THOR:
-        import pytest; pytest.skip("plugin UI test not applicable for thor")
-    if not hasattr(thor.fuzzy, "FuzzyFinderPlugin"):
-        import pytest; pytest.skip("FuzzyFinderPlugin not available in thor")
 
-    plugin = fuzzyfinder.FuzzyFinderPlugin()
+    mgr = fuzzyfinder._FuzzyFinderManager(window=None)
     shown: list = []
-    plugin._show_finder = lambda: shown.append(True)  # type: ignore[method-assign]
-    assert plugin._handle_global_key("p", True, False, False) is True
+    mgr._show_finder = lambda: shown.append(True)  # type: ignore[method-assign]
+    assert mgr._handle_global_key("p", True, False, False) is True
     assert shown == [True]
-    assert plugin._handle_global_key("p", False, False, False) is False
-    assert plugin._handle_global_key("p", True, True, False) is False
-    assert plugin._handle_global_key("p", True, False, True) is False
-    assert plugin._handle_global_key("x", True, False, False) is False
-
-
-def test_show_finder_without_root_prompts():
-    if IS_THOR:
-        import pytest; pytest.skip("plugin UI test not applicable for thor")
-    if not hasattr(thor.fuzzy, "FuzzyFinderPlugin"):
-        import pytest; pytest.skip("FuzzyFinderPlugin not available in thor")
-
-    if fuzzyfinder.Gtk is None:
-        return  # no GTK: _show_finder is a no-op by design
-    plugin = fuzzyfinder.FuzzyFinderPlugin()
-    prompted: list = []
-    plugin._notify_no_root = lambda: prompted.append(True)  # type: ignore[method-assign]
-    saved = fuzzyfinder.find_project_root
-    fuzzyfinder.find_project_root = lambda _window: None
-    try:
-        plugin._show_finder()
-    finally:
-        fuzzyfinder.find_project_root = saved
-    assert prompted == [True]
+    assert mgr._handle_global_key("p", False, False, False) is False
+    assert mgr._handle_global_key("p", True, True, False) is False
+    assert mgr._handle_global_key("p", True, False, True) is False
+    assert mgr._handle_global_key("x", True, False, False) is False
 
 
 def test_markup_highlight_bolds_runs_and_escapes():
@@ -269,10 +232,6 @@ def test_search_top_limit_matches_full_sort():
 
 
 def test_order_with_recent():
-    if IS_THOR:
-        import pytest; pytest.skip("plugin UI test not applicable for thor")
-    if not hasattr(thor.fuzzy, "FuzzyFinderPlugin"):
-        import pytest; pytest.skip("FuzzyFinderPlugin not available in thor")
 
     items = [("b.txt", "/root/b.txt"), ("a.txt", "/root/a.txt"), ("c.txt", "/root/c.txt")]
     assert fuzzyfinder.order_with_recent(items, []) == items
@@ -286,28 +245,27 @@ def test_order_with_recent():
     ]
 
 
-def test_plugin_recent_and_cache_helpers():
-    if IS_THOR:
-        import pytest; pytest.skip("plugin UI test not applicable for thor")
-    if not hasattr(thor.fuzzy, "FuzzyFinderPlugin"):
-        import pytest; pytest.skip("FuzzyFinderPlugin not available in thor")
+def test_recent_and_cache_helpers():
 
-    plugin = fuzzyfinder.FuzzyFinderPlugin()
-    assert plugin._cached_files("/no/such/dir-xyz") is None
+    mgr = fuzzyfinder._FuzzyFinderManager(window=None)
+    assert mgr._cached_files("/no/such/dir-xyz") is None
     with tempfile.TemporaryDirectory() as tmp:
         key = os.path.abspath(tmp)
-        assert plugin._cached_files(tmp) is None
-        plugin._file_cache[key] = [os.path.join(tmp, "a.txt")]
-        assert plugin._cached_files(tmp) == [os.path.join(tmp, "a.txt")]
+        assert mgr._cached_files(tmp) is None
+        mgr._file_cache[key] = [os.path.join(tmp, "a.txt")]
+        # Fresh mtime required: the real cache drops entries whose root
+        # changed on disk since it was stored.
+        mgr._file_cache_mtime[key] = os.path.getmtime(tmp)
+        assert mgr._cached_files(tmp) == [os.path.join(tmp, "a.txt")]
     # Recency: prepend, dedupe, truncate to MAX_RECENT.
-    plugin._remember_recent("/root/b.txt")
-    plugin._remember_recent("/root/a.txt")
-    plugin._remember_recent("/root/b.txt")
-    assert plugin._recent == ["/root/b.txt", "/root/a.txt"]
+    mgr._remember_recent("/root/b.txt")
+    mgr._remember_recent("/root/a.txt")
+    mgr._remember_recent("/root/b.txt")
+    assert mgr._recent == ["/root/b.txt", "/root/a.txt"]
     for i in range(fuzzyfinder.MAX_RECENT + 5):
-        plugin._remember_recent(f"/root/f{i}.txt")
-    assert len(plugin._recent) == fuzzyfinder.MAX_RECENT
-    assert plugin._recent[0] == f"/root/f{fuzzyfinder.MAX_RECENT + 4}.txt"
+        mgr._remember_recent(f"/root/f{i}.txt")
+    assert len(mgr._recent) == fuzzyfinder.MAX_RECENT
+    assert mgr._recent[0] == f"/root/f{fuzzyfinder.MAX_RECENT + 4}.txt"
     # Background load caches existing roots (recent-first) and never bad ones.
     with tempfile.TemporaryDirectory() as tmp:
         _touch(os.path.join(tmp, "a.txt"))
@@ -320,14 +278,14 @@ def test_plugin_recent_and_cache_helpers():
         saved_glib = getattr(fuzzyfinder, "GLib", None)
         fuzzyfinder.GLib = types.SimpleNamespace(idle_add=lambda fn, *a: fn(*a))
         try:
-            loader = fuzzyfinder.FuzzyFinderPlugin()
+            loader = fuzzyfinder._FuzzyFinderManager(window=None)
             loader._recent = [os.path.join(tmp, "sub", "b.txt")]
             loader._load_in_background(tmp, dialog)
         finally:
             fuzzyfinder.GLib = saved_glib
         assert received and received[-1][0][1].endswith(os.path.join("sub", "b.txt"))
         assert loader._cached_files(tmp) is not None
-    nosuch = fuzzyfinder.FuzzyFinderPlugin()
+    nosuch = fuzzyfinder._FuzzyFinderManager(window=None)
     fuzzyfinder.GLib = types.SimpleNamespace(idle_add=lambda fn, *a: fn(*a))
     try:
         nosuch._load_in_background("/no/such/dir-xyz", dialog)

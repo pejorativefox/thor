@@ -850,15 +850,11 @@ class AutoReloadManager:
 
 # -- module-level attach/detach for ThorWindow --------------------------
 
-_managers: dict[int, AutoReloadManager] = {}
-
-
 def attach(window) -> bool:
     """Wire autoreload to *window*. Soft-fails when GTK/GLib unavailable."""
     if window is None:
         return False
-    key = id(window)
-    if key in _managers:
+    if getattr(window, "_thor_autoreload", None) is not None:
         return True
     # soft-fail if window lacks required API (headless tests may pass dummy)
     if not hasattr(window, "connect") or not hasattr(window, "get_documents"):
@@ -869,7 +865,6 @@ def attach(window) -> bool:
     except Exception as e:
         logger.debug(f"attach failed: {e!r}")
         return False
-    _managers[key] = mgr
     try:
         window._thor_autoreload = mgr  # type: ignore[attr-defined]
     except Exception:
@@ -886,16 +881,9 @@ def detach(window) -> bool:
     """Unwire autoreload from *window*."""
     if window is None:
         return False
-    key = id(window)
-    mgr = _managers.pop(key, None)
+    mgr = getattr(window, "_thor_autoreload", None)
     if mgr is None:
-        # also try attribute
-        try:
-            mgr = getattr(window, "_thor_autoreload", None)
-        except Exception:
-            mgr = None
-        if mgr is None:
-            return False
+        return False
     try:
         mgr._detach()
     except Exception:
@@ -911,6 +899,3 @@ def detach(window) -> bool:
         pass
     return True
 
-
-# Compatibility alias for plugin tests (thor standalone)
-AutoReloadPlugin = AutoReloadManager

@@ -1,8 +1,7 @@
 """Headless regression tests for recent thor fixes (no display needed).
 
 Covers: output Problems PROB_PATH/PROB_LINE mapping + row activation
-jump, roslyn initialize-error path (stays in error, no on_ready), and
-pending-root handoffs naming a non-directory (preserved, not consumed).
+jump, and roslyn initialize-error path (stays in error, no on_ready).
 """
 
 import os
@@ -81,19 +80,3 @@ def test_roslyn_initialize_error_stays_error_without_ready():
     assert mgr2.state == "error", mgr2.state
     assert ready == [], ready
     assert len(errors) == 1, errors
-
-
-def test_take_pending_root_non_dir_preserved():
-    """A handoff naming a non-directory is kept, never consumed."""
-    import thor.project as projectmode
-
-    with tempfile.TemporaryDirectory() as tmp:
-        target = os.path.join(tmp, "pending-root")
-        missing = os.path.join(tmp, "no-such-dir")
-        assert projectmode.write_pending_root(missing, path=target) == target
-        assert projectmode.take_pending_root(path=target) is None
-        assert os.path.isfile(target), "non-dir handoff must be preserved"
-
-        assert projectmode.write_pending_root(tmp, path=target) == target
-        assert projectmode.take_pending_root(path=target) == os.path.abspath(tmp)
-        assert not os.path.exists(target), "valid handoff must be consumed"
