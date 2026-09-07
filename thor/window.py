@@ -240,6 +240,7 @@ if Gtk is not None and GObject is not None:
             self._tabs: list = []
             self._css_provider = None
             self._save_state_timeout_id = None
+            self._session_save_timeout_id = None
             self._destroyed = False
             self._saving_panel_state = False
 
@@ -347,6 +348,63 @@ if Gtk is not None and GObject is not None:
             finally:
                 self._saving_panel_state = False
 
+        def _session_root(self):
+            """Canonical project root for session save/restore, or None."""
+            try:
+                from .project import session as _session
+
+                return _session.get_window_root(self)
+            except Exception:
+                logger.debug("_session_root failed", exc_info=True)
+                return None
+
+        def _schedule_session_save(self) -> None:
+            """Debounced continuous session save (tab add/remove/reorder/switch)."""
+            try:
+                if getattr(self, "_destroyed", False):
+                    return
+                if GLib is None:
+                    self._save_session_now()
+                    return
+                if getattr(self, "_session_save_timeout_id", None) is not None:
+                    try:
+                        GLib.source_remove(self._session_save_timeout_id)
+                    except Exception:
+                        pass
+                    self._session_save_timeout_id = None
+
+                def _fire():
+                    self._session_save_timeout_id = None
+                    if getattr(self, "_destroyed", False):
+                        return False
+                    try:
+                        self._save_session_now()
+                    except Exception:
+                        logger.debug("session debounced save failed", exc_info=True)
+                    return False
+
+                try:
+                    from .project.session import SESSION_SAVE_DEBOUNCE_MS
+
+                    delay = SESSION_SAVE_DEBOUNCE_MS
+                except Exception:
+                    delay = 500
+                self._session_save_timeout_id = GLib.timeout_add(delay, _fire)
+            except Exception:
+                logger.debug("_schedule_session_save failed", exc_info=True)
+
+        def _save_session_now(self) -> None:
+            """Synchronously persist open tabs for the current project root."""
+            try:
+                root = self._session_root()
+                if not root:
+                    return
+                from .project import session as _session
+
+                _session.save_for_root(root, self)
+            except Exception:
+                logger.debug("_save_session_now failed", exc_info=True)
+
         def _restore_panel_state(self) -> None:
             """Apply loaded panel state (visibility, active pages, sizes) to panels."""
             try:
@@ -409,8 +467,18 @@ if Gtk is not None and GObject is not None:
                     self._save_state_timeout_id = None
                 except Exception:
                     pass
+            if getattr(self, "_session_save_timeout_id", None) is not None and GLib is not None:
+                try:
+                    GLib.source_remove(self._session_save_timeout_id)
+                    self._session_save_timeout_id = None
+                except Exception:
+                    pass
             try:
                 self._save_panel_state()
+            except Exception:
+                pass
+            try:
+                self._save_session_now()
             except Exception:
                 pass
             try:
@@ -1165,8 +1233,20 @@ if Gtk is not None and GObject is not None:
                     self._save_state_timeout_id = None
                 except Exception:
                     pass
+            if getattr(self, "_session_save_timeout_id", None) is not None and GLib is not None:
+                try:
+                    GLib.source_remove(self._session_save_timeout_id)
+                    self._session_save_timeout_id = None
+                except Exception:
+                    pass
             try:
                 self._save_panel_state()
+            except Exception:
+                pass
+            try:
+                # Save session before the unsaved-changes prompt so "Close
+                # Anyway" still restores dirty buffers via backup stash.
+                self._save_session_now()
             except Exception:
                 pass
             # Prompt for unsaved? MVP: allow close, plugins may intercept

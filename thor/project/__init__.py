@@ -1643,10 +1643,35 @@ def _choose_root(window, browser) -> None:
                 return
         except Exception:
             return
+        # Save the outgoing root's session before switching so its tabs are
+        # not lost. The new root keeps current tabs (no auto-restore on manual
+        # switch — that would clobber the workspace); continuous save will
+        # associate them with the new root going forward.
+        try:
+            from . import session as _session
+
+            old_root = getattr(browser, "_root_dir", None)
+            if old_root and os.path.isdir(old_root):
+                try:
+                    if os.path.abspath(old_root) != os.path.abspath(folder):
+                        _session.save_for_root(old_root, window)
+                except Exception:
+                    logger.debug("session save on root switch failed", exc_info=True)
+        except Exception:
+            logger.debug("session pre-switch save failed", exc_info=True)
         try:
             browser.set_root(os.path.abspath(folder))
         except Exception as e:
             logger.debug(f"set_root failed for {folder}: {e!r}")
+            return
+        try:
+            from . import session as _session
+
+            saver = getattr(window, "_schedule_session_save", None)
+            if callable(saver):
+                saver()
+        except Exception:
+            logger.debug("session schedule after root switch failed", exc_info=True)
 
 def _project_key(window, event, browser) -> bool:
     parts = decode_key_event(event)
@@ -1762,6 +1787,15 @@ def attach(window, initial_folder: str | None = None) -> object | None:
         window._thor_project_handlers = handlers  # type: ignore[attr-defined]
     except Exception:
         logger.debug("project handlers store failed", exc_info=True)
+    # Per-project session: continuous save on tab changes (debounced) + save
+    # on exit (window delete-event/destroy, app shutdown). Restore happens in
+    # app._create_window after this attach resolves the root.
+    try:
+        from . import session as _session
+
+        _session.attach_window_session(window)
+    except Exception:
+        logger.debug("session attach failed", exc_info=True)
     folder_to_load: str | None = initial_folder
     if folder_to_load is None:
         try:

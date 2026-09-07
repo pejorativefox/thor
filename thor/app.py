@@ -195,6 +195,8 @@ if Gtk is not None:
                     saved.add(key)
                 if hasattr(window, "_save_panel_state"):
                     window._save_panel_state()
+                if hasattr(window, "_save_session_now"):
+                    window._save_session_now()
             except Exception:
                 pass
 
@@ -392,33 +394,48 @@ if Gtk is not None:
                 logger.exception("_create_window: ThorWindow construction failed")
                 raise
             file_lines = file_lines or {}
-            # Open requested files
-            for fp in files:
-                try:
-                    loc = file_lines.get(fp)
-                    if isinstance(loc, tuple):
-                        line, col = loc
-                    elif isinstance(loc, int):
-                        line, col = loc, None
-                    else:
-                        line, col = None, None
-                    line_pos = (line - 1) if line and line > 0 else -1
-                    col_pos = (col - 1) if col and col > 0 else -1
-                    win.open_file(fp, line_pos=line_pos, col_pos=col_pos, jump_to=True)
-                except Exception as e:
-                    logger.warning("open %s failed: %r", fp, e)
-            try:
-                if win._notebook.get_n_pages() == 0:  # type: ignore[attr-defined]
-                    win.create_tab(jump_to=True)
-            except Exception:
-                logger.debug("_create_window: empty notebook guard failed", exc_info=True)
-            # Bake built-in panels/plugins
+            # Bake built-in panels/plugins first so the project root (including
+            # the thor-code pending-root handoff) resolves before restore.
             try:
                 from .host import attach_builtin_plugins
 
                 attach_builtin_plugins(win, initial_folder=folder)
             except Exception as e:
                 logger.exception("plugin attach failed: %r", e)
+            # Restore per-project session, merging explicit files on top.
+            try:
+                from .project import session as _session
+
+                root = _session.get_window_root(win)
+                if root is None and folder and os.path.isdir(folder):
+                    root = os.path.abspath(folder)
+                restored = _session.restore_into_window(
+                    win, root, extra_files=files, extra_lines=file_lines
+                ) if root else False
+            except Exception:
+                logger.debug("_create_window: session restore failed", exc_info=True)
+                restored = False
+            if not restored:
+                # No session (or restore skipped): open requested files.
+                for fp in files:
+                    try:
+                        loc = file_lines.get(fp)
+                        if isinstance(loc, tuple):
+                            line, col = loc
+                        elif isinstance(loc, int):
+                            line, col = loc, None
+                        else:
+                            line, col = None, None
+                        line_pos = (line - 1) if line and line > 0 else -1
+                        col_pos = (col - 1) if col and col > 0 else -1
+                        win.open_file(fp, line_pos=line_pos, col_pos=col_pos, jump_to=True)
+                    except Exception as e:
+                        logger.warning("open %s failed: %r", fp, e)
+                try:
+                    if win._notebook.get_n_pages() == 0:  # type: ignore[attr-defined]
+                        win.create_tab(jump_to=True)
+                except Exception:
+                    logger.debug("_create_window: empty notebook guard failed", exc_info=True)
             return win
 
         def _new_window(self) -> None:

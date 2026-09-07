@@ -214,6 +214,13 @@ def state_path() -> str:
     return path
 
 
+def sessions_dir() -> str:
+    """Directory for per-project session files ($XDG_CACHE_HOME/thor/sessions)."""
+    path = os.path.join(cache_home(), "thor", "sessions")
+    ensure_dir(path)
+    return path
+
+
 __all__ = [
     "APP_ID",
     "data_home",
@@ -231,5 +238,6 @@ __all__ = [
     "roslyn_log_dir",
     "pending_root_path",
     "state_path",
+    "sessions_dir",
 ]
 
