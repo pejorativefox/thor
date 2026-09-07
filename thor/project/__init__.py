@@ -1644,9 +1644,10 @@ def _choose_root(window, browser) -> None:
         except Exception:
             return
         # Save the outgoing root's session before switching so its tabs are
-        # not lost. The new root keeps current tabs (no auto-restore on manual
-        # switch — that would clobber the workspace); continuous save will
-        # associate them with the new root going forward.
+        # not lost (dirty buffers are stashed, so no prompt is needed), then
+        # swap the workspace to the new root's saved session when one exists.
+        # With no saved session the current tabs are kept and continuous save
+        # associates them with the new root going forward.
         try:
             from . import session as _session
 
@@ -1667,11 +1668,50 @@ def _choose_root(window, browser) -> None:
         try:
             from . import session as _session
 
-            saver = getattr(window, "_schedule_session_save", None)
-            if callable(saver):
-                saver()
+            new_root = os.path.abspath(folder)
+            if _session.load_for_root(new_root) is None:
+                saver = getattr(window, "_schedule_session_save", None)
+                if callable(saver):
+                    saver()
+                return
+            # Suspend continuous saves while swapping so a mid-swap save can't
+            # persist a half-closed workspace over the session being restored.
+            try:
+                window._suspend_session_save = True  # type: ignore[attr-defined]
+            except Exception:
+                logger.debug("session suspend flag failed", exc_info=True)
+            try:
+                try:
+                    closer = getattr(window, "close_all_tabs", None)
+                    if callable(closer):
+                        closer()
+                except Exception:
+                    logger.debug("session switch close failed", exc_info=True)
+                try:
+                    ok = bool(_session.restore_into_window(window, new_root))
+                except Exception:
+                    logger.debug("session switch restore failed", exc_info=True)
+                    ok = False
+                if not ok:
+                    try:
+                        creator = getattr(window, "create_tab", None)
+                        if callable(creator):
+                            creator(jump_to=True)
+                    except Exception:
+                        logger.debug("session switch empty tab failed", exc_info=True)
+            finally:
+                try:
+                    window._suspend_session_save = False  # type: ignore[attr-defined]
+                except Exception:
+                    logger.debug("session resume flag failed", exc_info=True)
+                try:
+                    saver = getattr(window, "_schedule_session_save", None)
+                    if callable(saver):
+                        saver()
+                except Exception:
+                    logger.debug("session schedule after switch failed", exc_info=True)
         except Exception:
-            logger.debug("session schedule after root switch failed", exc_info=True)
+            logger.debug("session switch failed", exc_info=True)
 
 def _project_key(window, event, browser) -> bool:
     parts = decode_key_event(event)

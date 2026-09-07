@@ -102,6 +102,10 @@ class _Win:
         self._tabs.append(tab)
         return tab
 
+    def close_all_tabs(self):
+        self._tabs = []
+        self._active = 0
+
 
 def _touch(path, content="x"):
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -222,3 +226,24 @@ def test_collect_skips_empty_untitled():
     win = _Win([_Tab(_Doc())])
     entries, _active = session.collect_tabs(win)
     assert entries == []
+
+
+def test_switch_roots_swaps_tabs():
+    """Simulates _choose_root: save old, close all, restore new root."""
+    with tempfile.TemporaryDirectory() as root_a, tempfile.TemporaryDirectory() as root_b, \
+            tempfile.TemporaryDirectory() as cache:
+        fa = _touch(os.path.join(root_a, "a.py"), "a")
+        fb = _touch(os.path.join(root_b, "b.py"), "b")
+        session.save_for_root(root_b, _Win([_Tab(_Doc(fb))]), base=cache)
+        win = _Win([_Tab(_Doc(fa, modified=True, text="dirty-a"))])
+        # Switch A -> B
+        assert session.save_for_root(root_a, win, base=cache) is not None
+        win.close_all_tabs()
+        assert session.restore_into_window(win, root_b, base=cache) is True
+        assert [c[0] for c in win.open_calls] == [os.path.abspath(fb)]
+        # Switch back B -> A restores the stashed dirty buffer
+        assert session.save_for_root(root_b, win, base=cache) is not None
+        win.close_all_tabs()
+        assert session.restore_into_window(win, root_a, base=cache) is True
+        assert win._tabs[0].get_document()._text == "dirty-a"
+        assert win._tabs[0].get_document()._modified is True

@@ -241,6 +241,7 @@ if Gtk is not None and GObject is not None:
             self._css_provider = None
             self._save_state_timeout_id = None
             self._session_save_timeout_id = None
+            self._suspend_session_save = False
             self._destroyed = False
             self._saving_panel_state = False
 
@@ -363,6 +364,8 @@ if Gtk is not None and GObject is not None:
             try:
                 if getattr(self, "_destroyed", False):
                     return
+                if getattr(self, "_suspend_session_save", False):
+                    return
                 if GLib is None:
                     self._save_session_now()
                     return
@@ -396,6 +399,8 @@ if Gtk is not None and GObject is not None:
         def _save_session_now(self) -> None:
             """Synchronously persist open tabs for the current project root."""
             try:
+                if getattr(self, "_suspend_session_save", False):
+                    return
                 root = self._session_root()
                 if not root:
                     return
