@@ -34,6 +34,7 @@ from .intelligence import (
     should_trigger_completion,
     xy_of,
 )
+from ..keys import decode_key_event
 
 def doc_path(doc) -> str | None:
     try:
@@ -334,25 +335,20 @@ else:
             return offset_to_position(buffer_text(doc), cursor_offset(doc))
 
         def _on_key_press(self, view, event, doc) -> bool:
-            try:
-                mods = event.state & Gtk.accelerator_get_default_mod_mask()
-                keyval = event.keyval
-                keyname = Gdk.keyval_name(keyval) or ""
-                ctrl = bool(mods & Gdk.ModifierType.CONTROL_MASK)
-                shift = bool(mods & Gdk.ModifierType.SHIFT_MASK)
-                alt = bool(mods & Gdk.ModifierType.MOD1_MASK)
-            except Exception:
-                return False
             if not is_csharp_doc(doc):
                 return False
             path = doc_path(doc)
             if not path:
                 return False
+            parts = decode_key_event(event)
+            if parts is None:
+                return False
+            keyname, ctrl, shift, alt = parts
             if ctrl or keyname == "F12" or keyname.lower() == "space":
                 logger.debug(f"key: name={keyname} ctrl={ctrl} shift={shift} alt={alt} "
                       f"path={path} framework={self.framework_completion}")
             line, char = self._cursor_lsp(doc)
-            plain = mods in (0, Gdk.ModifierType.SHIFT_MASK)
+            plain = (not ctrl) and (not alt)  # shift allowed — matches mods in (0, SHIFT_MASK)
             if keyname == "F12" and plain:
                 if shift:
                     self.emit("find-references", path, line, char)
@@ -387,11 +383,14 @@ else:
                 # only caused duplicate requests and stale (path,line) cache
                 # warming — stay out of the way.
                 return False
+            parts = decode_key_event(event)
+            if parts is None:
+                return False
+            _keyname, ctrl, _shift, alt = parts
+            if ctrl or alt:
+                return False
             try:
-                mods = event.state & Gtk.accelerator_get_default_mod_mask()
-                if mods & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.MOD1_MASK):
-                    return False
-                typed = Gdk.keyval_to_unicode(event.keyval)
+                typed = Gdk.keyval_to_unicode(event.keyval)  # type: ignore[union-attr]
                 char = chr(typed) if typed else ""
             except Exception:
                 return False

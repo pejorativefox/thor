@@ -268,6 +268,7 @@ _GIT_RELEVANT_FILES = frozenset({"HEAD", "index", "packed-refs", "ORIG_HEAD", "F
 _GIT_NOISE_SUFFIXES = (".lock", ".tmp", ".swp", "~")
 
 from thor.util import is_save_completed, tab_state_name
+from ..keys import decode_key_event
 
 def _rel_within(path: str, base: str) -> str | None:
     """Relative path of `path` under `base`, or None when outside."""
@@ -1648,19 +1649,16 @@ def _choose_root(window, browser) -> None:
             logger.debug(f"set_root failed for {folder}: {e!r}")
 
 def _project_key(window, event, browser) -> bool:
-    if Gtk is None or Gdk is None:
+    parts = decode_key_event(event)
+    if parts is None:
         return False
-    try:
-        mods = event.state & Gtk.accelerator_get_default_mod_mask()
-        keyname = Gdk.keyval_name(event.keyval) or ""
-        ctrl = bool(mods & Gdk.ModifierType.CONTROL_MASK)
-        shift = bool(mods & Gdk.ModifierType.SHIFT_MASK)
-        alt = bool(mods & Gdk.ModifierType.MOD1_MASK)
-        if ctrl and shift and not alt and keyname.lower() == "o":
+    keyname, ctrl, shift, alt = parts
+    if ctrl and shift and not alt and keyname.lower() == "o":
+        try:
             _choose_root(window, browser)
-            return True
-    except Exception:
-        logger.debug("project key check failed", exc_info=True)
+        except Exception:
+            logger.debug("project key check failed", exc_info=True)
+        return True
     return False
 
 def _consume_pending() -> str | None:

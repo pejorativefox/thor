@@ -35,6 +35,7 @@ except Exception:  # headless / missing typelibs
 
 from .files import list_project_files
 from .matcher import FuzzyIndex, fuzzy_find, fuzzy_match, markup_highlight
+from ..keys import decode_key_event
 
 
 (COL_LABEL, COL_MARKUP, COL_PATH) = range(3)
@@ -453,16 +454,10 @@ class _FuzzyFinderManager:
         return False
 
     def _on_window_key_press(self, _window, event) -> bool:
-        if Gtk is None or Gdk is None:
+        parts = decode_key_event(event)
+        if parts is None:
             return False
-        try:
-            mods = event.state & Gtk.accelerator_get_default_mod_mask()
-            keyname = Gdk.keyval_name(event.keyval) or ""
-            ctrl = bool(mods & Gdk.ModifierType.CONTROL_MASK)
-            shift = bool(mods & Gdk.ModifierType.SHIFT_MASK)
-            alt = bool(mods & Gdk.ModifierType.MOD1_MASK)
-        except Exception:
-            return False
+        keyname, ctrl, shift, alt = parts
         return self._handle_global_key(keyname, ctrl, shift, alt)
 
     # -- file cache ----------------------------------------------------

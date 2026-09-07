@@ -20,6 +20,8 @@ try:
 except Exception:  # headless / missing typelib
     Gtk = Gdk = Gio = GLib = None  # type: ignore[no-redef]
 
+from ..keys import decode_key_event
+
 PANES_SCHEMA = "org.x.editor.preferences.ui"
 
 # ---------------------------------------------------------------------------
@@ -260,16 +262,10 @@ def _handle_global_key(window, keyname: str, ctrl: bool, shift: bool, alt: bool)
     return False
 
 def _on_window_key_press(window, event) -> bool:
-    if Gtk is None or Gdk is None:
+    parts = decode_key_event(event)
+    if parts is None:
         return False
-    try:
-        mods = event.state & Gtk.accelerator_get_default_mod_mask()
-        keyname = Gdk.keyval_name(event.keyval) or ""
-        ctrl = bool(mods & Gdk.ModifierType.CONTROL_MASK)
-        shift = bool(mods & Gdk.ModifierType.SHIFT_MASK)
-        alt = bool(mods & Gdk.ModifierType.MOD1_MASK)
-    except Exception:
-        return False
+    keyname, ctrl, shift, alt = parts
     return _handle_global_key(window, keyname, ctrl, shift, alt)
 
 # ---------------------------------------------------------------------------

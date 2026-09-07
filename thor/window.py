@@ -9,11 +9,6 @@ import pathlib
 
 logger = logging.getLogger(__name__)
 
-# Keys owned by plugins — ThorWindow._on_key_press must never swallow these
-# (panel_hider: Ctrl+B/J/E; fuzzy: Ctrl+P; terminal: Ctrl+` and Ctrl+Shift+T/W).
-_PLUGIN_CTRL_KEYS = frozenset({"p", "b", "j", "e", "grave", "quoteleft", "asciigrave", "`"})
-_PLUGIN_CTRL_SHIFT_KEYS = frozenset({"t", "w"})
-
 try:
     import gi
 
@@ -25,6 +20,7 @@ except Exception:  # headless
 
 from .panel import ThorPanel
 from .document import ThorDocument, ThorTab
+from .keys import CTRL_PLUGIN_KEYS, CTRL_SHIFT_PLUGIN_KEYS, decode_key_event
 from .state import load_state as load_panel_state, save_state as save_panel_state
 
 if Gtk is not None and GObject is not None:
@@ -1127,19 +1123,18 @@ if Gtk is not None and GObject is not None:
             # Thor-native save handling (XFCE traditional). Plugins also listen.
             # Plugin-owned keys fall through explicitly (return False) so this
             # handler can never swallow them, regardless of later edits below:
-            # panel_hider Ctrl+B/J/E, fuzzy Ctrl+P, terminal Ctrl+` and
-            # Ctrl+Shift+T/W.
+            # panel_hider Ctrl+B/J/E, fuzzy Ctrl+P, find Ctrl+F/G, palette
+            # Ctrl+Shift+P, terminal Ctrl+` and Ctrl+Shift+T/W.
+            parts = decode_key_event(event)
+            if parts is None:
+                return False
+            keyname, ctrl, shift, _alt = parts
+            if ctrl and keyname:
+                if not shift and keyname in CTRL_PLUGIN_KEYS:
+                    return False
+                if shift and keyname in CTRL_SHIFT_PLUGIN_KEYS:
+                    return False
             try:
-                mods = event.state & Gtk.accelerator_get_default_mod_mask()  # type: ignore[union-attr]
-                keyval = event.keyval
-                keyname = (Gdk.keyval_name(keyval) or "").lower()  # type: ignore[union-attr]
-                ctrl = bool(mods & Gdk.ModifierType.CONTROL_MASK)  # type: ignore[union-attr]
-                shift = bool(mods & Gdk.ModifierType.SHIFT_MASK)  # type: ignore[union-attr]
-                if ctrl and keyname:
-                    if not shift and keyname in _PLUGIN_CTRL_KEYS:
-                        return False
-                    if shift and keyname in _PLUGIN_CTRL_SHIFT_KEYS:
-                        return False
                 if ctrl and not shift and keyname == "s":
                     self.save_active_tab(save_as=False)
                     return True

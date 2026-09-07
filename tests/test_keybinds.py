@@ -1,16 +1,10 @@
 """Keybinds tab-switching shortcuts (headless)."""
 
-import os
-import sys
 import types
 
 import pytest
 
-
 import thor.keybinds as keybinds
-IS_THOR = True  # thor standalone, skip plugin UI tests
-
-HAVE_PLUGIN = hasattr(getattr(keybinds, "KeybindsPlugin", None), "_step_tab")
 
 
 class _FakeDoc:
@@ -65,16 +59,12 @@ def _plugin_ns(n=3):
 
 
 def test_ctrl_page_down_advances():
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
     ns, window = _plugin_ns()
     assert ns._handle_global_key("Page_Down", True, False, False) is True
     assert window.activated == [window.tabs[1]]
 
 
 def test_ctrl_page_up_goes_back():
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
     ns, window = _plugin_ns()
     window.active = window.tabs[1]
     assert ns._handle_global_key("Page_Up", True, False, False) is True
@@ -82,8 +72,6 @@ def test_ctrl_page_up_goes_back():
 
 
 def test_wraparound_last_to_first():
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
     ns, window = _plugin_ns()
     window.active = window.tabs[2]
     assert ns._handle_global_key("Page_Down", True, False, False) is True
@@ -91,16 +79,12 @@ def test_wraparound_last_to_first():
 
 
 def test_wraparound_first_to_last():
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
     ns, window = _plugin_ns()
     assert ns._handle_global_key("Page_Up", True, False, False) is True
     assert window.activated == [window.tabs[2]]
 
 
 def test_keypad_variants():
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
     ns, window = _plugin_ns()
     assert ns._handle_global_key("KP_Page_Down", True, False, False) is True
     assert ns._handle_global_key("KP_Page_Up", True, False, False) is True
@@ -108,16 +92,12 @@ def test_keypad_variants():
 
 
 def test_single_tab_noop():
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
     ns, window = _plugin_ns(n=1)
     assert ns._handle_global_key("Page_Down", True, False, False) is True
     assert window.activated == []
 
 
 def test_unknown_active_falls_back_to_first():
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
     ns, window = _plugin_ns()
     window.active = object()
     assert ns._handle_global_key("Page_Down", True, False, False) is True
@@ -125,8 +105,6 @@ def test_unknown_active_falls_back_to_first():
 
 
 def test_wrong_modifiers_ignored():
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
     ns, window = _plugin_ns()
     assert ns._handle_global_key("Page_Down", True, True, False) is False
     assert ns._handle_global_key("Page_Down", True, False, True) is False
@@ -136,8 +114,6 @@ def test_wrong_modifiers_ignored():
 
 
 def test_other_keys_ignored():
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
     ns, window = _plugin_ns()
     assert ns._handle_global_key("x", True, False, False) is False
     assert ns._handle_global_key("Tab", True, False, False) is False
@@ -145,10 +121,6 @@ def test_other_keys_ignored():
 
 
 def test_window_key_press_drives_handler():
-    if IS_THOR:
-        import pytest; pytest.skip("plugin UI test not applicable for thor")
-    if not HAVE_PLUGIN:
-        pytest.skip("plugin not available")
     try:
         import gi
 
@@ -156,12 +128,12 @@ def test_window_key_press_drives_handler():
         from gi.repository import Gdk
     except Exception as e:
         pytest.skip(f"no Gdk ({e})")
-    ns, window = _plugin_ns()
+    _ns, window = _plugin_ns()
     event = types.SimpleNamespace(
         state=int(Gdk.ModifierType.CONTROL_MASK),
         keyval=Gdk.keyval_from_name("Page_Down"),
     )
-    assert ns._on_window_key_press(None, event) is True
+    assert keybinds._on_window_key_press(window, event) is True
     assert window.activated == [window.tabs[1]]
 
 

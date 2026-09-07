@@ -36,6 +36,7 @@ except Exception:  # headless
     _GTKSOURCE_AVAILABLE = False
 
 from .search import current_index, find_all, next_index, prev_index
+from ..keys import decode_key_event
 
 TAG_MATCH = "thor-find-match"
 TAG_CURRENT = "thor-find-current"
@@ -263,21 +264,19 @@ class FindBar(Gtk.Box if Gtk is not None else object):  # type: ignore[misc]
         self.hide()
 
     def _on_entry_key(self, _w, event) -> bool:
-        try:
-            key = Gdk.keyval_name(event.keyval) or ""  # type: ignore[union-attr]
-            if key == "Escape":
-                self.manager.hide()
-                return True
-            if key == "Return" or key == "KP_Enter":
-                mods = event.state & Gtk.accelerator_get_default_mod_mask()  # type: ignore[union-attr]
-                shift = bool(mods & Gdk.ModifierType.SHIFT_MASK)  # type: ignore[union-attr]
-                if shift:
-                    self.manager._go_prev()
-                else:
-                    self.manager._go_next()
-                return True
-        except Exception:
-            pass
+        parts = decode_key_event(event)
+        if parts is None:
+            return False
+        key, _ctrl, shift, _alt = parts
+        if key == "Escape":
+            self.manager.hide()
+            return True
+        if key in ("Return", "KP_Enter"):
+            if shift:
+                self.manager._go_prev()
+            else:
+                self.manager._go_next()
+            return True
         return False
 
 
@@ -592,14 +591,11 @@ class FindManager:
         self._select_hit(doc, view, self._hits[prv])
 
     def _on_window_key(self, window, event) -> bool:
-        if Gtk is None or Gdk is None:
+        parts = decode_key_event(event)
+        if parts is None:
             return False
         try:
-            mods = event.state & Gtk.accelerator_get_default_mod_mask()
-            keyname = Gdk.keyval_name(event.keyval) or ""
-            ctrl = bool(mods & Gdk.ModifierType.CONTROL_MASK)
-            shift = bool(mods & Gdk.ModifierType.SHIFT_MASK)
-            alt = bool(mods & Gdk.ModifierType.MOD1_MASK)
+            keyname, ctrl, shift, alt = parts
             lower = keyname.lower()
 
             # Escape hides bar when visible (even if entry not focused)
@@ -632,7 +628,7 @@ class FindManager:
                     self._go_next()
                 return True
         except Exception as e:
-            logger.debug(f"find key handler failed: {e!r}")
+            logger.debug("find key handler failed: %r", e, exc_info=True)
         return False
 
 

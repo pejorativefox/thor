@@ -1,18 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Thor keybinds — tab cycling, line copy/cut/paste, preferences.
+"""Thor keybinds — tab cycling, line copy/cut/paste, tab close, preferences.
 
 Key ownership (return True ONLY when handled, else False so the next
 window ``key-press-event`` handler runs):
 
 - This module: Ctrl+PageUp/PageDown (tab cycle), Ctrl+C/X/V whole-line
-  hijack (only when the focused editable view has NO selection), Ctrl+,
-  (preferences).
-- panel_hider: Ctrl+B (two-way side/bottom toggle).
-- terminal: Ctrl+Shift+T (new tab), Ctrl+\\` (two-way focus/reveal),
-  Ctrl+Shift+W (close terminal tab — NOT window close; the window's own
-  close binding must use a different accelerator or check that the
-  terminal claimed the key first).
-- fuzzy: Ctrl+P.  find: Ctrl+F / F3.
+  hijack (only when the focused editable view has NO selection), Ctrl+W
+  (close the active document tab — only when an editor is focused),
+  Ctrl+, (preferences).
+- panel_hider: Ctrl+B/J/E (panel toggles).
+- terminal: Ctrl+Shift+T (new tab), Ctrl+` (two-way focus/reveal),
+  Ctrl+Shift+W (close terminal tab — NOT window close).
+- fuzzy: Ctrl+P.  palette: Ctrl+Shift+P.  find: Ctrl+F, Ctrl+G(+Shift), F3.
+
+Keys owned by sibling handlers are declined via ``thor.keys.CTRL_PLUGIN_KEYS``
+(see that module for the canonical ownership table).
 
 Headless-safe: pure helpers importable without a display.
 """
@@ -28,51 +30,47 @@ try:
 
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
-    from gi.repository import Gtk, Gdk, Gio, GLib  # type: ignore
+    from gi.repository import Gtk, Gdk  # type: ignore
 except Exception:  # headless
-    Gtk = Gdk = Gio = GLib = None  # type: ignore[assignment]
+    Gtk = Gdk = None  # type: ignore[assignment]
+
+from ..keys import CTRL_PLUGIN_KEYS, decode_key_event
 
 def _get_clipboard_text():
     """Return clipboard text or None. Uses Gtk.Clipboard.get_default."""
+    if Gtk is None or Gdk is None:
+        return None
+    # Prefer get_default (modern) with fallback to get(SELECTION_CLIPBOARD)
     try:
-        if Gtk is None or Gdk is None:
-            return None
-        # Prefer get_default (modern) with fallback to get(SELECTION_CLIPBOARD)
-        try:
-            display = Gdk.Display.get_default()
-            if display is not None and hasattr(Gtk.Clipboard, "get_default"):
-                clipboard = Gtk.Clipboard.get_default(display)
-                if clipboard is not None:
-                    return clipboard.wait_for_text()
-        except Exception:
-            pass
-        # Fallback for older GTK or headless mock
-        try:
-            return Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).wait_for_text()  # type: ignore[union-attr]
-        except Exception:
-            return None
+        display = Gdk.Display.get_default()
+        if display is not None and hasattr(Gtk.Clipboard, "get_default"):
+            clipboard = Gtk.Clipboard.get_default(display)
+            if clipboard is not None:
+                return clipboard.wait_for_text()
+    except Exception:
+        pass
+    # Fallback for older GTK or headless mock
+    try:
+        return Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).wait_for_text()  # type: ignore[union-attr]
     except Exception:
         return None
 
 def _set_clipboard_text(text) -> bool:
     """Set clipboard text. Uses Gtk.Clipboard.get_default. Returns success."""
+    if Gtk is None or Gdk is None:
+        return False
     try:
-        if Gtk is None or Gdk is None:
-            return False
-        try:
-            display = Gdk.Display.get_default()
-            if display is not None and hasattr(Gtk.Clipboard, "get_default"):
-                clipboard = Gtk.Clipboard.get_default(display)
-                if clipboard is not None:
-                    clipboard.set_text(text, -1)
-                    return True
-        except Exception:
-            pass
-        try:
-            Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(text, -1)  # type: ignore[union-attr]
-            return True
-        except Exception:
-            return False
+        display = Gdk.Display.get_default()
+        if display is not None and hasattr(Gtk.Clipboard, "get_default"):
+            clipboard = Gtk.Clipboard.get_default(display)
+            if clipboard is not None:
+                clipboard.set_text(text, -1)
+                return True
+    except Exception:
+        pass
+    try:
+        Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(text, -1)  # type: ignore[union-attr]
+        return True
     except Exception:
         return False
 
@@ -107,22 +105,19 @@ def _step_tab(window, direction: int) -> None:
             return
         try:
             active = window.get_active_tab()
-        except Exception:
-            active = None
-        try:
             idx = tabs.index(active)
-        except ValueError:
+        except Exception:
             idx = 0
         window.set_active_tab(tabs[(idx + direction) % len(tabs)])
     except Exception as e:
-        logger.debug(f"tab step failed: {e!r}")
+        logger.debug("tab step failed: %r", e, exc_info=True)
 
 def _open_preferences(window) -> bool:
     """Try to activate EditPreferences action; soft-fail if no UI manager."""
     try:
         ui_manager = window.get_ui_manager()
     except Exception as e:
-        logger.debug(f"preferences ui-manager failed: {e!r}")
+        logger.debug("preferences ui-manager failed: %r", e, exc_info=True)
         return False
     if ui_manager is None:
         logger.debug("preferences ui-manager not available")
@@ -130,7 +125,7 @@ def _open_preferences(window) -> bool:
     try:
         groups = ui_manager.get_action_groups()
     except Exception as e:
-        logger.debug(f"preferences action-groups failed: {e!r}")
+        logger.debug("preferences action-groups failed: %r", e, exc_info=True)
         return False
     for group in groups or ():
         try:
@@ -142,7 +137,7 @@ def _open_preferences(window) -> bool:
         try:
             action.activate()
         except Exception as e:
-            logger.debug(f"preferences activate failed: {e!r}")
+            logger.debug("preferences activate failed: %r", e, exc_info=True)
             return False
         return True
     logger.debug("preferences action EditPreferences not found")
@@ -170,19 +165,19 @@ def _handle_clipboard_key(lowered, view) -> bool:
     GTK bindings run. Returns True only when this handler acted.
     """
     try:
-        try:
-            if not view.is_focus() or not view.get_editable():
-                return False
-        except Exception as e:
-            logger.debug("clipboard focus/edit check failed: %r", e, exc_info=True)
+        if not view.is_focus() or not view.get_editable():
             return False
+    except Exception as e:
+        logger.debug("clipboard focus/edit check failed: %r", e, exc_info=True)
+        return False
+    try:
         buffer = view.get_buffer()
-        try:
-            if buffer.get_has_selection():
-                return False
-        except Exception as e:
-            logger.debug("clipboard selection check failed: %r", e, exc_info=True)
+        if buffer.get_has_selection():
             return False
+    except Exception as e:
+        logger.debug("clipboard selection check failed: %r", e, exc_info=True)
+        return False
+    try:
         if lowered in ("c", "x"):
             insert = buffer.get_insert()
             line = buffer.get_iter_at_mark(insert).get_line()
@@ -193,8 +188,8 @@ def _handle_clipboard_key(lowered, view) -> bool:
             _set_clipboard_text(text + "\n")
             if lowered == "c":
                 return True
+            buffer.begin_user_action()
             try:
-                buffer.begin_user_action()
                 del_end = end.copy()
                 if not del_end.is_end():
                     del_end.forward_char()
@@ -216,8 +211,8 @@ def _handle_clipboard_key(lowered, view) -> bool:
                 return False
             stripped = text[:-1]
             cursor_line = buffer.get_iter_at_mark(buffer.get_insert()).get_line()
+            buffer.begin_user_action()
             try:
-                buffer.begin_user_action()
                 buffer.insert(buffer.get_iter_at_line(cursor_line), stripped + "\n")
             finally:
                 try:
@@ -227,7 +222,7 @@ def _handle_clipboard_key(lowered, view) -> bool:
             return True
         return False
     except Exception as e:
-        logger.debug(f"clipboard key failed: {e!r}")
+        logger.debug("clipboard key failed: %r", e, exc_info=True)
         return False
 
 def handle_global_key(*args, **kwargs) -> bool:
@@ -294,17 +289,16 @@ def handle_global_key(*args, **kwargs) -> bool:
     if "alt" in kwargs:
         alt = kwargs["alt"]
 
-    # Owned Ctrl-only keys below. Everything else — notably Ctrl+B
-    # (panel_hider), Ctrl+` (terminal), Ctrl+Shift+W (terminal close, not
-    # window close), Ctrl+P/F — must fall through (False) so the owning
-    # handler runs. Returning True here would swallow those keys.
+    # Owned Ctrl-only keys below. Everything else — notably the sibling
+    # plugin keys in CTRL_PLUGIN_KEYS (panel_hider, fuzzy, find, terminal)
+    # — must fall through (False) so the owning handler runs. Returning
+    # True here would swallow those keys.
     if not (ctrl and not shift and not alt):
         return False
     lowered = (keyname or "").lower()
     # Explicitly decline keys owned by sibling handlers, even though the
     # generic guard above already rejects most (shifted) variants.
-    # Ctrl+B/J/E (panel_hider), Ctrl+P (fuzzy), Ctrl+` (terminal).
-    if lowered in ("b", "j", "e", "p", "f", "g", "grave", "quoteleft", "asciigrave", "`"):
+    if lowered in CTRL_PLUGIN_KEYS:
         return False
     if lowered == "w":
         # Ctrl+W closes the active document tab, but only when the focus
@@ -323,41 +317,23 @@ def handle_global_key(*args, **kwargs) -> bool:
         try:
             window.close_tab(tab)
         except Exception as e:
-            logger.debug(f"close tab failed: {e!r}", exc_info=True)
+            logger.debug("close tab failed: %r", e, exc_info=True)
             return False
         return True
     if lowered in ("page_up", "kp_page_up"):
         logger.debug("key: Ctrl+PageUp previous-tab")
-        # window may be None in legacy/no-window tests; _step_tab handles None gracefully via try
-        if window is not None:
-            _step_tab(window, -1)
-        else:
-            # still report handled even without window (like original single-tab test)
-            try:
-                _step_tab(window, -1)  # type: ignore[arg-type]
-            except Exception as e:
-                logger.debug("tab step failed: %r", e, exc_info=True)
+        # _step_tab swallows exceptions internally; window may be None in
+        # legacy no-window tests, in which case we still report handled.
+        _step_tab(window, -1)  # type: ignore[arg-type]
         return True
     if lowered in ("page_down", "kp_page_down"):
         logger.debug("key: Ctrl+PageDown next-tab")
-        if window is not None:
-            _step_tab(window, +1)
-        else:
-            try:
-                _step_tab(window, +1)  # type: ignore[arg-type]
-            except Exception as e:
-                logger.debug("tab step failed: %r", e, exc_info=True)
+        _step_tab(window, +1)  # type: ignore[arg-type]
         return True
     if lowered in ("c", "x", "v"):
-        # needs a view; without window we must try _active_editor_view if window exists
-        view = None
-        if window is not None:
-            view = _active_editor_view(window)
-        else:
-            # No window -> fall through (return False) unless caller monkeypatches view via window mock
-            # For legacy tests that set window.get_active_view, window is the fake window, not None
-            # So this branch only when truly no window
-            return False
+        # Needs a focused editor view. Without a window, or when the view is
+        # missing/unfocused, fall through so stock GTK bindings run.
+        view = _active_editor_view(window) if window is not None else None
         if view is None:
             return False
         return _handle_clipboard_key(lowered, view)
@@ -370,16 +346,10 @@ def handle_global_key(*args, **kwargs) -> bool:
 
 def _on_window_key_press(window, event) -> bool:
     """GTK key-press-event handler that delegates to handle_global_key."""
-    try:
-        if Gtk is None or Gdk is None:
-            return False
-        mods = event.state & Gtk.accelerator_get_default_mod_mask()
-        keyname = Gdk.keyval_name(event.keyval) or ""
-        ctrl = bool(mods & Gdk.ModifierType.CONTROL_MASK)
-        shift = bool(mods & Gdk.ModifierType.SHIFT_MASK)
-        alt = bool(mods & Gdk.ModifierType.MOD1_MASK)
-    except Exception:
+    parts = decode_key_event(event)
+    if parts is None:
         return False
+    keyname, ctrl, shift, alt = parts
     return handle_global_key(window, keyname, ctrl, shift, alt)
 
 def attach(window) -> int | None:
@@ -403,10 +373,10 @@ def attach(window) -> int | None:
             window._thor_keybinds_handler_id = handler_id  # type: ignore[attr-defined]
         except Exception:
             pass
-        logger.debug(f"keybinds attached handler {handler_id}")
+        logger.debug("keybinds attached handler %s", handler_id)
         return handler_id
     except Exception as e:
-        logger.debug(f"attach failed: {e!r}")
+        logger.debug("attach failed: %r", e, exc_info=True)
         return None
 
 def detach(window) -> None:

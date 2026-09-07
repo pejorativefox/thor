@@ -203,6 +203,8 @@ try:
 except Exception:
     GObject = Gtk = Gdk = Gio = GLib = Pango = Vte = GtkSource = None  # type: ignore[no-redef]
 
+from ..keys import decode_key_event
+
 def _pick_icon(candidates: tuple[str, ...]) -> str:
     if Gtk is None:
         return candidates[0]
@@ -903,16 +905,10 @@ def attach(window) -> object | None:
         return False
 
     def _on_window_key_press(_win, event) -> bool:
-        if Gtk is None or Gdk is None:
+        parts = decode_key_event(event)
+        if parts is None:
             return False
-        try:
-            mods = event.state & Gtk.accelerator_get_default_mod_mask()
-            keyname = Gdk.keyval_name(event.keyval) or ""
-            ctrl = bool(mods & Gdk.ModifierType.CONTROL_MASK)
-            shift = bool(mods & Gdk.ModifierType.SHIFT_MASK)
-            alt = bool(mods & Gdk.ModifierType.MOD1_MASK)
-        except Exception:
-            return False
+        keyname, ctrl, shift, alt = parts
         return _handle_global(keyname, ctrl, shift, alt)
 
     window_key_id = None
