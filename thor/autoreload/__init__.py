@@ -351,7 +351,20 @@ def snapshot_position(window, doc) -> tuple:
 
 
 def restore_position(window, doc, snapshot) -> bool:
-    """Restore cursor + scroll; clamps when the reloaded doc is shorter."""
+    """Restore cursor + scroll; clamps when the reloaded doc is shorter.
+
+    The cursor is restored immediately (mark-based, independent of layout).
+    Scroll offsets are applied *deferred*: right after a FileLoader swap the
+    text view's adjustments still describe the old/partial layout (their
+    ``upper`` is momentarily ~page size), so setting the saved pixel offset
+    synchronously clamps it near the top — and once GTK recomputes the real
+    extent moments later it never raises the value again, leaving the view
+    scrolled to the top. The apply therefore runs on an idle callback (by
+    then the pending redraw has rebuilt the extents) and re-queues until the
+    target offset actually fits the recomputed extent — or, for a view that
+    is currently unmapped (hidden notebook page), after the view is mapped
+    again so extents are final.
+    """
     try:
         line, offset, v_value, h_value = snapshot
     except Exception:
@@ -374,9 +387,23 @@ def restore_position(window, doc, snapshot) -> bool:
         view = _view_for_doc(window, doc)
         if view is None:
             return True
-        for getter, value in (
-            ("get_vadjustment", v_value),
-            ("get_hadjustment", h_value),
+    except Exception:
+        return True
+
+    def _apply_scroll(attempts: int = 8, prev: tuple = (None, None)) -> None:
+        """Set saved offsets; re-queue while extents are still settling.
+
+        GTK finalizes the text view's scrollbar extent asynchronously after
+        the reload (typically on the first redraw), so the first attempt may
+        find ``upper`` still ~page-sized and clamp the saved offset to ~0.
+        Keep re-queuing while the achievable target keeps moving toward the
+        saved offset; once the extent stops growing the last clamp is the
+        honest "as close as possible" (doc genuinely got shorter).
+        """
+        retry = False
+        nxt = list(prev)
+        for idx, (getter, value) in enumerate(
+            (("get_vadjustment", v_value), ("get_hadjustment", h_value))
         ):
             if value is None:
                 continue
@@ -384,11 +411,58 @@ def restore_position(window, doc, snapshot) -> bool:
                 adj = getattr(view, getter)()
                 upper = float(adj.get_upper())
                 page = float(adj.get_page_size())
-                adj.set_value(min(max(0.0, float(value)), max(0.0, upper - page)))
+                target = min(max(0.0, float(value)), max(0.0, upper - page))
+                adj.set_value(target)
+                old = nxt[idx]
+                nxt[idx] = target
+                if target < float(value) - 1.0 and (
+                    old is None or abs(target - old) > 0.5
+                ):
+                    retry = True
             except Exception:
                 continue
-    except Exception as e:
-        logger.debug("restore scroll failed: %r", e, exc_info=True)
+        if retry and attempts > 0 and GLib is not None:
+            try:
+                GLib.idle_add(lambda: _apply_scroll(attempts - 1, tuple(nxt)))
+            except Exception:
+                pass
+
+    def _defer() -> None:
+        try:
+            GLib.idle_add(_apply_scroll)
+        except Exception:
+            # Headless / no main loop: best-effort synchronous restore.
+            _apply_scroll()
+
+    if GLib is None:
+        _apply_scroll()
+        return True
+    mapped = True
+    try:
+        mapped = bool(view.get_mapped())
+    except Exception:
+        pass
+    if mapped:
+        _defer()
+        return True
+    # Hidden tab: extents only become final once the view is mapped and
+    # drawn, so wait for the map before (deferred) applying.
+    holder: dict = {}
+
+    def _on_map(*_args):
+        hid = holder.pop("id", None)
+        if hid is not None:
+            try:
+                view.disconnect(hid)
+            except Exception:
+                pass
+        _defer()
+        return False
+
+    try:
+        holder["id"] = view.connect("map", _on_map)
+    except Exception:
+        _defer()
     return True
 
 

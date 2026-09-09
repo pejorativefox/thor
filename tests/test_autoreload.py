@@ -518,3 +518,202 @@ def test_file_differs_ignores_implicit_trailing_newline():
         assert ar.file_differs(FakeDoc(text="one\ntwo\n"), path) is False
         assert ar.file_differs(FakeDoc(text="one\nTWO"), path) is True
         assert ar.file_differs(FakeDoc(text="x"), os.path.join(tmp, "Missing.cs")) is None
+
+
+class FakeAdj:
+    """Adjustment with mutable extent; records every set_value."""
+
+    def __init__(self, upper=2000.0, page=500.0, value=0.0):
+        self._upper = float(upper)
+        self._page = float(page)
+        self.value = float(value)
+        self.sets = []
+
+    def get_upper(self):
+        return self._upper
+
+    def get_page_size(self):
+        return self._page
+
+    def get_value(self):
+        return self.value
+
+    def set_value(self, v):
+        self.value = float(v)
+        self.sets.append(self.value)
+
+
+class FakeView:
+    def __init__(self, mapped=True, vadj=None, hadj=None):
+        self.mapped = mapped
+        self.vadj = vadj or FakeAdj()
+        self.hadj = hadj or FakeAdj()
+        self.handlers = {}
+        self._next = 1
+
+    def get_vadjustment(self):
+        return self.vadj
+
+    def get_hadjustment(self):
+        return self.hadj
+
+    def get_mapped(self):
+        return self.mapped
+
+    def connect(self, signal, handler):
+        hid = self._next
+        self._next += 1
+        self.handlers.setdefault(signal, []).append((hid, handler))
+        return hid
+
+    def disconnect(self, hid):
+        for signal, lst in self.handlers.items():
+            for i, (h, _handler) in enumerate(lst):
+                if h == hid:
+                    lst.pop(i)
+                    return
+
+    def fire(self, signal, *args):
+        for _hid, handler in list(self.handlers.get(signal, [])):
+            handler(*args)
+
+
+class FakeIdleGLib:
+    """Records idle callbacks so tests can step the main-loop deferral."""
+
+    def __init__(self):
+        self.idles = []
+        self._next = 1
+
+    def idle_add(self, callback):
+        self.idles.append(callback)
+        return self._next
+
+    def step(self):
+        """Run one queued idle (LIFO like GLib priority), if any."""
+        if not self.idles:
+            return None
+        cb = self.idles.pop()
+        cb()
+        return cb
+
+
+class FakeViewTab:
+    def __init__(self, view):
+        self._view = view
+
+    def get_view(self):
+        return self._view
+
+
+class FakeViewWindow:
+    def __init__(self, doc, view):
+        self._doc = doc
+        self._view = view
+
+    def get_tab_from_location(self, _location):
+        return FakeViewTab(self._view)
+
+
+def _view_snapshot(line=41, offset=0, v=1500.0, h=60.0):
+    return (line, offset, v, h)
+
+
+def test_restore_position_defers_scroll_until_idle():
+    """Regression: scroll must not be set synchronously after a reload, when
+    the text view's extents are still stale — it is applied on an idle."""
+    glib = FakeIdleGLib()
+    vadj = FakeAdj(upper=2000.0, page=500.0)
+    hadj = FakeAdj(upper=4000.0, page=500.0)
+    view = FakeView(mapped=True, vadj=vadj, hadj=hadj)
+    doc = FakeDoc(modified=False)
+    window = FakeViewWindow(doc, view)
+    saved = _patched_module(GLib=glib)
+    try:
+        assert ar.restore_position(window, doc, _view_snapshot()) is True
+        # cursor restored immediately (mark-based, layout-independent)
+        assert doc.placed_cursor == [41]
+        # scroll deferred: nothing set until the idle runs
+        assert vadj.sets == []
+        assert hadj.sets == []
+        glib.step()
+        assert vadj.value == 1500.0
+        assert hadj.value == 60.0
+        # target fits the final extent: no further retries queued
+        assert glib.idles == []
+    finally:
+        _restore_module(saved)
+
+
+def test_restore_position_retries_until_extent_finalizes():
+    """When the first idle still sees a stale ~page-sized extent, the apply
+    re-queues and lands on the saved offset once GTK grows the extent."""
+    glib = FakeIdleGLib()
+    # stale extent right after reload: upper ~ page size -> would clamp to ~0
+    vadj = FakeAdj(upper=600.0, page=500.0)
+    hadj = FakeAdj(upper=4000.0, page=500.0)
+    view = FakeView(mapped=True, vadj=vadj, hadj=hadj)
+    doc = FakeDoc(modified=False)
+    window = FakeViewWindow(doc, view)
+    saved = _patched_module(GLib=glib)
+    try:
+        ar.restore_position(window, doc, _view_snapshot())
+        glib.step()  # first idle: extent still stale -> clamped low, retry queued
+        assert vadj.value == min(1500.0, 600.0 - 500.0)
+        assert glib.idles, "stale extent must re-queue the apply"
+        # GTK recomputes the real extent before the next idle
+        vadj._upper = 64000.0
+        glib.step()
+        assert vadj.value == 1500.0
+        assert hadj.value == 60.0
+    finally:
+        _restore_module(saved)
+
+
+def test_restore_position_unmapped_view_waits_for_map():
+    """Hidden notebook pages have no final extents until mapped: the scroll
+    apply must wait for the view's map signal."""
+    glib = FakeIdleGLib()
+    vadj = FakeAdj(upper=2000.0, page=500.0)
+    hadj = FakeAdj(upper=4000.0, page=500.0)
+    view = FakeView(mapped=False, vadj=vadj, hadj=hadj)
+    doc = FakeDoc(modified=False)
+    window = FakeViewWindow(doc, view)
+    saved = _patched_module(GLib=glib)
+    try:
+        assert ar.restore_position(window, doc, _view_snapshot()) is True
+        assert view.handlers.get("map"), "unmapped view must wait for map"
+        assert vadj.sets == []
+        # user switches to the tab: map fires, then the idle applies
+        view.fire("map")
+        assert glib.idles
+        glib.step()
+        assert vadj.value == 1500.0
+        assert hadj.value == 60.0
+        # one-shot: handler disconnected after firing
+        assert view.handlers.get("map") == []
+    finally:
+        _restore_module(saved)
+
+
+def test_restore_position_clamps_to_shorter_doc():
+    """A reloaded doc that got shorter clamps cursor + scroll to fit."""
+    glib = FakeIdleGLib()
+    vadj = FakeAdj(upper=1600.0, page=500.0)  # e.g. 100 lines at 16px
+    hadj = FakeAdj(upper=4000.0, page=500.0)
+    view = FakeView(mapped=True, vadj=vadj, hadj=hadj)
+    doc = FakeDoc(modified=False, lines=100)
+    window = FakeViewWindow(doc, view)
+    saved = _patched_module(GLib=glib)
+    try:
+        ar.restore_position(window, doc, _view_snapshot(line=1500, v=24012.0))
+        assert doc.placed_cursor == [99]  # last line of the shorter doc
+        glib.step()
+        assert vadj.value == 1600.0 - 500.0  # pinned at the new bottom
+        # extent stops growing (genuinely shorter): clamp is final, no loop
+        assert glib.idles
+        glib.step()
+        assert vadj.value == 1600.0 - 500.0
+        assert glib.idles == []
+    finally:
+        _restore_module(saved)
