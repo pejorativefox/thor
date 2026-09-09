@@ -7,10 +7,11 @@ with the standard :pymod:`logging` module.
 * ``THOR_DEBUG`` env var (``1``/``true``/``yes``/``on``) enables ``DEBUG``
   level for the ``thor`` loggers; otherwise level is ``WARNING`` (so
   ``error``/``warning`` are always visible but debug traces are silent).
-* All messages go through :pymod:`logging` (stderr via ``StreamHandler``).
-  The legacy marker file ``/tmp/thor-csharp-<uid>.log`` is still appended
-  for ``error`` (always) and for ``debug``/``marker`` when debugging is on,
-  so ``doctor.py`` keeps working.
+* All messages go through :pymod:`logging`: a filtered stderr
+  ``StreamHandler`` plus an always-on DEBUG file handler at
+  ``$XDG_STATE_HOME/thor/logs/thor.log`` (see ``thor.logging_config``).
+  The marker file is still appended for ``error`` (always) and for
+  ``debug``/``marker`` when debugging is on, so ``doctor.py`` keeps working.
 * New code should prefer ``logging.getLogger(__name__)`` directly; the
   ``debug``/``error``/``marker``/``is_debug`` symbols remain for
   backwards-compatibility and delegate to the loggers.
