@@ -41,6 +41,23 @@ from .matcher import FuzzyIndex, fuzzy_find, fuzzy_match, markup_highlight
 MAX_ROWS = 60
 MAX_RECENT = 20
 
+#: Explicit selected-row style for the results list. The search entry always
+#: holds focus, so GTK paints the treeview with its *unfocused* selection
+#: colour (a faint grey bar); we override both states with the same vivid
+#: accent so the file that Enter will open is unmistakable.
+_SELECTION_CSS = (
+    "treeview.view:selected, treeview.view:selected:focus {"
+    " background-color: #3d78c2;"
+    " background-image: none;"
+    " color: #ffffff;"
+    "}"
+)
+
+
+def selection_css() -> str:
+    """CSS for the fuzzy finder result selection (pure string, headless-safe)."""
+    return _SELECTION_CSS
+
 __all__ = [
     "FuzzyFinderDialog",
     "FuzzyIndex",
@@ -57,6 +74,7 @@ __all__ = [
     "fuzzy_match",
     "markup_highlight",
     "list_project_files",
+    "selection_css",
 ]
 
 
@@ -155,6 +173,16 @@ if Gtk is not None:
             col = Gtk.TreeViewColumn("File", cell, markup=COL_MARKUP)
             self._view.append_column(col)
             self._view.connect("row-activated", lambda _v, _p, _c: self._activate_selected())
+            self._selection_css = None
+            try:
+                provider = Gtk.CssProvider()
+                provider.load_from_data(_SELECTION_CSS.encode("utf-8"))
+                self._view.get_style_context().add_provider(
+                    provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION  # type: ignore[attr-defined]
+                )
+                self._selection_css = provider
+            except Exception as e:
+                logger.debug(f"fuzzy selection css failed: {e!r}")
             scrolled = Gtk.ScrolledWindow()
             scrolled.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
             scrolled.add(self._view)

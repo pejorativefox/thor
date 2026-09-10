@@ -297,6 +297,31 @@ def test_recent_and_cache_helpers():
     assert nosuch._cached_files("/no/such/dir-xyz") is None
 
 
+def test_selection_css_is_explicit():
+    css = fuzzyfinder.selection_css()
+    # Both focused and unfocused states must use the same vivid colour, because
+    # the search entry keeps focus while the results list is navigated.
+    assert "treeview.view:selected" in css
+    assert "treeview.view:selected:focus" in css
+    assert "background-color" in css
+
+
+def test_dialog_applies_selection_css():
+    if fuzzyfinder.Gtk is None:
+        pytest.skip("no Gtk")
+    try:
+        dialog = fuzzyfinder.FuzzyFinderDialog(parent=None)
+    except Exception as e:
+        pytest.skip(f"no display: {e}")
+    try:
+        assert dialog._selection_css is not None
+    finally:
+        try:
+            dialog.destroy()
+        except Exception:
+            pass
+
+
 def test_entry_ctrl_n_p_and_paging():
 
     if fuzzyfinder.Gtk is None or fuzzyfinder.Gdk is None:
