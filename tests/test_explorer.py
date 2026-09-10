@@ -125,3 +125,32 @@ def test_double_click_keeps_expansion():
         assert opened and opened[0].endswith("Top.cs"), opened
         explorer.set_model(model)
         assert _expanded(explorer, Gtk)
+
+
+def test_set_model_uses_precomputed_trees(monkeypatch):
+    if _GUI is None:
+        pytest.skip("no display")
+    Gtk = _GUI
+    from thor.csharp import explorer as explorer_mod
+    from thor.csharp.explorer import SolutionExplorer
+    from thor.csharp.solution import FileNode
+
+    with tempfile.TemporaryDirectory() as tmp:
+        model = _model(tmp)
+        pre = os.path.join(tmp, "Pre.cs")
+        with open(pre, "w") as f:
+            f.write("// precomputed")
+        model.trees = {
+            model.projects[0].path: [FileNode("Pre.cs", pre, False, [])]
+        }
+
+        def _boom(_dir):
+            raise AssertionError("must not walk the disk with precomputed trees")
+
+        monkeypatch.setattr(explorer_mod, "project_tree", _boom)
+        explorer = SolutionExplorer()
+        explorer.set_model(model)
+        sln = explorer.store.get_iter_first()
+        proj = explorer.store.iter_children(sln)
+        first_file = explorer.store.iter_children(proj)
+        assert explorer.store.get_value(first_file, 0) == "Pre.cs"

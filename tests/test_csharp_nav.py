@@ -56,6 +56,57 @@ def test_refresh_cb_runs_discovery_without_attribute_error(monkeypatch, tmp_path
     assert mgr._model is model
 
 
+def _inline_thread(monkeypatch):
+    import thor.csharp as csharp_mod
+
+    class _InlineThread:
+        def __init__(self, target=None, name=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    monkeypatch.setattr(csharp_mod.threading, "Thread", _InlineThread)
+
+
+def test_refresh_publish_survives_starved_idle(monkeypatch, tmp_path):
+    """The watchdog forces the publish through when idle delivery starves.
+
+    Regression test for the CoreForge freeze: the worker logged
+    ``load_solution`` but ``_publish_solution`` never ran because a
+    redraw storm outranks idle callbacks. Timeouts outrank redraws, so
+    the watchdog publish must land the model anyway.
+    """
+    import thor.csharp as csharp_mod
+    import thor.csharp.solution as solution_mod
+
+    mgr = _manager()
+    model = solution_mod.SolutionModel(path=None, root_dir=str(tmp_path), projects=[])
+    monkeypatch.setattr(solution_mod, "load_solution", lambda start, dotnet: model)
+    # Idle delivery scheduled but never fires; watchdog fires inline.
+    monkeypatch.setattr(csharp_mod.GLib, "idle_add", lambda fn, *a, **k: None)
+    monkeypatch.setattr(csharp_mod.GLib, "timeout_add", lambda ms, fn, *a, **k: fn(*a, **k))
+    _inline_thread(monkeypatch)
+    mgr._refresh_cb()
+    assert mgr._model is model
+    assert mgr._pending_publish is None
+
+
+def test_publish_never_rebuilds_twice(monkeypatch, tmp_path):
+    """Late idle delivery after a watchdog publish must be a no-op."""
+    import thor.csharp.solution as solution_mod
+
+    mgr = _manager()
+    model = solution_mod.SolutionModel(path=None, root_dir=str(tmp_path), projects=[])
+    calls = []
+    orig = mgr._refresh_solution
+    mgr._refresh_solution = lambda m=None: (calls.append(m), orig(m))
+    mgr._refresh_gen = 7
+    assert mgr._publish_solution(model, 7) is False
+    assert mgr._publish_solution(model, 7) is False
+    assert calls == [model]
+
+
 def _ready_manager():
     mgr = _manager()
     recorded = []

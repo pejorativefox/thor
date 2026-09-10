@@ -131,13 +131,26 @@ else:
             self.store.clear()
             sln_label = os.path.basename(model.path) if model.path else f"{os.path.basename(model.root_dir)}/ (no .sln/.slnx)"
             sln_iter = self.store.append(None, [sln_label, model.path or model.root_dir, "solution", ""])
+            # Trees precomputed on the refresh worker (model.trees) keep
+            # disk I/O off the main thread; walk inline only for models
+            # built without them (tests, other callers). `in` (not .get())
+            # so a legitimately empty project doesn't trigger a re-walk.
+            trees = getattr(model, "trees", None) or {}
             for project in model.projects:
                 hint = ", ".join(project.target_frameworks) or project.output_type
                 if project.is_test_project:
                     hint = (hint + " [tests]").strip()
                 proj_iter = self.store.append(sln_iter, [project.name, project.path, "project", hint])
+                if project.path in trees:
+                    nodes = trees[project.path]
+                else:
+                    try:
+                        nodes = project_tree(os.path.dirname(project.path))
+                    except Exception as e:
+                        logger.debug(f"explorer tree failed: {e!r}")
+                        continue
                 try:
-                    self._append_tree(proj_iter, project_tree(os.path.dirname(project.path)))
+                    self._append_tree(proj_iter, nodes)
                 except Exception as e:
                     logger.debug(f"explorer tree failed: {e!r}")
             from gi.repository import Gtk as _Gtk

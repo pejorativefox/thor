@@ -898,17 +898,31 @@ def show_completion(view, provider=None) -> bool:
 
 
 def attach_to_views(window, provider, attached: set) -> int:
-    """Register the provider on every view once. Returns new attachments."""
+    """Register the provider on every view once. Returns new attachments.
+
+    Keys are ``id(view)`` (never ``hash(view)``: wrapper hashes collide
+    and stale entries then pin dead views forever — the set only grew).
+    Dead entries are pruned against the live views each pass, and a view
+    whose completion already lists the provider is never added twice, so
+    a transiently empty view list can't cause duplicate providers.
+    """
     count = 0
     try:
         views = window.get_views()
     except Exception as e:
         logger.debug(f"completion attach: get_views failed: {e!r}")
         return 0
+    live: set = set()
+    for view in views or []:
+        try:
+            live.add(id(view))
+        except Exception:
+            continue
+    attached.intersection_update(live)
     logger.debug(f"completion attach: {len(views or [])} views, {len(attached)} already attached")
     for view in views or []:
         try:
-            key = hash(view)
+            key = id(view)
         except Exception:
             continue
         if key in attached:
@@ -920,7 +934,12 @@ def attach_to_views(window, provider, attached: set) -> int:
         if completion is None:
             continue
         try:
-            completion.add_provider(provider)
+            try:
+                registered = list(completion.get_providers() or [])
+            except Exception:
+                registered = []
+            if provider not in registered:
+                completion.add_provider(provider)
             attached.add(key)
             count += 1
         except Exception as e:
@@ -936,7 +955,7 @@ def detach_from_views(window, provider, attached: set) -> None:
         views = []
     for view in views or []:
         try:
-            if hash(view) not in attached:
+            if id(view) not in attached:
                 continue
             view.get_completion().remove_provider(provider)
         except Exception:

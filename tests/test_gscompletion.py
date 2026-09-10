@@ -406,6 +406,14 @@ def test_attach_detach_view():
         gs_mod.detach_from_views(fake_window, provider, attached)
         assert len(view.get_completion().get_providers()) == before
         assert attached == set()
+        # Prune: no live views drops dead entries; re-attach after a
+        # prune never registers the provider twice on the same view.
+        assert gs_mod.attach_to_views(fake_window, provider, attached) == 1
+        empty_window = types.SimpleNamespace(get_views=lambda: [])
+        assert gs_mod.attach_to_views(empty_window, provider, attached) == 0
+        assert attached == set()
+        assert gs_mod.attach_to_views(fake_window, provider, attached) == 1
+        assert len(view.get_completion().get_providers()) == before + 1
     finally:
         win.destroy()
 

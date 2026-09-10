@@ -143,6 +143,13 @@ DIAG_MARK_CATEGORY = "thor-csharp-diagnostic"
 #: Tabs often change in bursts (startup, session restore); one sweep wins.
 REFRESH_DEBOUNCE_MS = 250
 
+#: Watchdog (ms) for a starved solution publish. Gutter redraws outrank
+#: idle callbacks, so a redraw storm can delay _publish_solution
+#: indefinitely (frozen UI, no log trail, no autosave). The watchdog is a
+#: timeout, which outranks redraws, so it forces a pending publish
+#: through and logs loudly when it has to.
+PUBLISH_WATCHDOG_MS = 2000
+
 #: Diagnostics arrive in bursts (one notification per file per keystroke);
 #: coalesce them for this long before touching the UI. Reuses a single
 #: timeout source while notifications keep arriving.
@@ -267,6 +274,11 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         # Solution refresh runs off-thread; the generation counter drops
         # stale results when refreshes overlap (startup bursts).
         self._refresh_gen = 0
+        # Publish watchdog state: the worker records each (model, gen) it
+        # hands to the main loop; the publish clears it. A still-pending
+        # entry when the watchdog fires means idle delivery starved.
+        self._pending_publish = None
+        self._last_publish_gen = 0
         # Diagnostics coalescing: one pending source + last Problems build.
         self._diag_source: int | None = None
         self._diag_pending = False
@@ -610,10 +622,21 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             except Exception as e:
                 logger.debug(f"refresh discovery failed: {e!r}")
                 model = None
+            # Trees are disk I/O: build them here, off the main thread,
+            # so the publish only does TreeStore inserts.
+            try:
+                solution_mod.attach_project_trees(model)
+            except Exception as e:
+                logger.debug(f"refresh trees failed: {e!r}")
+            self._pending_publish = (model, gen)
             try:
                 GLib.idle_add(self._publish_solution, model, gen)
             except Exception as e:
                 logger.debug(f"refresh publish schedule failed: {e!r}")
+            try:
+                GLib.timeout_add(PUBLISH_WATCHDOG_MS, self._publish_watchdog, gen)
+            except Exception as e:
+                logger.debug(f"publish watchdog schedule failed: {e!r}")
 
         try:
             threading.Thread(target=_worker, name="thor-csharp-refresh", daemon=True).start()
@@ -627,6 +650,13 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         if gen != self._refresh_gen:
             logger.debug(f"refresh gen={gen} superseded by gen={self._refresh_gen}, dropping")
             return False
+        if gen == self._last_publish_gen:
+            # Already published (idle delivery arrived after the watchdog
+            # forced it through, or vice versa): never rebuild twice.
+            return False
+        self._last_publish_gen = gen
+        if self._pending_publish is not None and self._pending_publish[1] == gen:
+            self._pending_publish = None
         try:
             self._refresh_solution(model)
         except OSError as e:
@@ -637,6 +667,29 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             logger.debug(f"refresh publish failed: {e!r}")
             if self.output is not None:
                 self.output.set_status("Solution refresh failed — see log.")
+        return False
+
+    def _publish_watchdog(self, gen: int) -> bool:
+        """Timeout fallback: force through a publish idle delivery starved.
+
+        One-shot (always returns False). No-op when the publish already
+        landed or a newer refresh superseded it.
+        """
+        pending = self._pending_publish
+        if pending is None or pending[1] != gen:
+            return False
+        model = pending[0]
+        try:
+            logger.error(
+                f"solution publish gen={gen} starved for {PUBLISH_WATCHDOG_MS}ms "
+                "(redraw storm?); forcing through"
+            )
+        except Exception:
+            pass
+        try:
+            self._publish_solution(model, gen)
+        except Exception as e:
+            logger.debug(f"watchdog publish failed: {e!r}")
         return False
 
     def _refresh_solution(self, model=None) -> None:

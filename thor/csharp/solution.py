@@ -15,7 +15,7 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from . import dotnet_cli
 
@@ -41,6 +41,11 @@ class SolutionModel:
     path: Optional[str]
     root_dir: str
     projects: List[ProjectInfo] = field(default_factory=list)
+    #: Precomputed explorer trees (project path -> nodes), filled by
+    #: attach_project_trees() on the refresh worker. The explorer prefers
+    #: these over walking the disk inline, so publishing a solution on
+    #: the main thread never blocks on filesystem I/O.
+    trees: Dict[str, List["FileNode"]] = field(default_factory=dict)
 
 
 def _glob_case(directory: str, *patterns: str) -> List[str]:
@@ -94,6 +99,10 @@ _PRUNE_DIRS = frozenset({
     ".git", ".svn", ".hg", ".cache", ".dotnet", ".nuget",
     "bin", "obj", "node_modules", ".vs", ".idea",
     "dosdevices", "drive_c",
+    # Build-output farms: thousands of generated files, never sources.
+    # BenchmarkDotNet.Artifacts alone can be hundreds of MB; walking it
+    # on the main thread stalls the editor on every tab switch.
+    "TestResults", "BenchmarkDotNet.Artifacts", "artifacts",
 })
 
 #: Max walk depth for the glob fallback (see find_projects_fallback).
@@ -191,6 +200,29 @@ def project_tree(root_dir: str, max_depth: int = 8) -> List[FileNode]:
             logger.debug(f"project_tree entry failed: {e!r}")
             continue
     return nodes
+
+
+def attach_project_trees(model: SolutionModel) -> SolutionModel:
+    """Precompute every project's explorer tree (I/O-heavy: call off-thread).
+
+    ``project_tree`` walks the disk once per project; doing that inside
+    the main-thread publish froze the editor on every tab switch on big
+    solutions. The refresh worker calls this before handing the model to
+    the main loop, so ``SolutionExplorer.set_model`` only does TreeStore
+    inserts. Models without precomputed trees still work — the explorer
+    falls back to walking inline.
+    """
+    if model is None:
+        return model
+    trees: Dict[str, List[FileNode]] = {}
+    for proj in model.projects:
+        try:
+            trees[proj.path] = project_tree(os.path.dirname(proj.path))
+        except Exception as e:
+            logger.debug(f"project_tree failed for {proj.path}: {e!r}")
+            trees[proj.path] = []
+    model.trees = trees
+    return model
 
 
 #: A project line from `dotnet sln list`: an optional console marker

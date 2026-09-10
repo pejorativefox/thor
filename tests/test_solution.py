@@ -156,6 +156,9 @@ def test_project_tree_prunes_junk():
     with tempfile.TemporaryDirectory() as tmp:
         _touch(os.path.join(tmp, "bin", "Built.cs"))
         _touch(os.path.join(tmp, "obj", "Gen.cs"))
+        _touch(os.path.join(tmp, "TestResults", "Run.trx"))
+        _touch(os.path.join(tmp, "BenchmarkDotNet.Artifacts", "Gen.cs"))
+        _touch(os.path.join(tmp, "artifacts", "Out.cs"))
         _touch(os.path.join(tmp, ".hidden", "H.cs"))
         _touch(os.path.join(tmp, "Empty", "note.txt"))
         with tempfile.TemporaryDirectory() as elsewhere:
@@ -191,3 +194,22 @@ def test_load_solution_glob_fallback():
         model = solution.load_solution(proj_dir, dotnet="definitely-not-a-real-binary")
         assert model.path is None
         assert [p.path for p in model.projects] == [csproj]
+
+
+def test_attach_project_trees_prefills_and_prunes():
+    import tempfile
+
+    from conftest import _touch
+
+    with tempfile.TemporaryDirectory() as tmp:
+        proj_dir = os.path.join(tmp, "App")
+        _touch(os.path.join(proj_dir, "Real.cs"))
+        _touch(os.path.join(proj_dir, "BenchmarkDotNet.Artifacts", "Gen.cs"))
+        csproj = os.path.join(proj_dir, "App.csproj")
+        with open(csproj, "w") as f:
+            f.write("<Project/>")
+        model = solution.SolutionModel(path=None, root_dir=tmp)
+        model.projects.append(solution.ProjectInfo(path=csproj, name="App"))
+        assert model.trees == {}
+        assert solution.attach_project_trees(model) is model
+        assert [n.name for n in model.trees[csproj]] == ["Real.cs"]
