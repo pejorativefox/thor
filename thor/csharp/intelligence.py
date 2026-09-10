@@ -572,6 +572,23 @@ def filter_completion(
     return [item for _, _, item in scored]
 
 
+def completion_matches(item: "CompletionItem", prefix: str) -> bool:
+    """True when ``item`` survives a prefix filter (cull only, order kept).
+
+    Same match semantics as :func:`filter_completion`, but the input order
+    (Roslyn relevance order) is preserved instead of re-sorting by match
+    tier. The GtkSource framework path uses this: the framework filters
+    again with its own matcher as the user types, so this stage must only
+    remove hopeless rows, never re-rank relevant ones above the fold.
+    """
+    if not prefix:
+        return True
+    try:
+        return fuzzy_score(_match_text(item), prefix.lower()) is not None
+    except Exception:
+        return True
+
+
 def best_initial_index(items: list["CompletionItem"]) -> int:
     """Index the popup should select first (VSCode preselect wins)."""
     for index, item in enumerate(items):

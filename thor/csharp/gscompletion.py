@@ -336,19 +336,31 @@ class _RoslynCompletionProviderBase:
             return False
 
     def _proposals_for(self, items: list) -> list:
-        # VSCode highlights the preselected item; the framework selects
-        # the first row, so the preselected item leads (stable). Sort the
-        # FULL list first, then truncate: truncating first could drop the
-        # preselected item (or better matches) past MAX_PROPOSALS.
+        # Server order is relevance order: truncate in that order first so
+        # relevance decides what survives past MAX_PROPOSALS. The framework
+        # always selects the first row, so a preselected item is promoted
+        # to the lead afterwards (selection, not ranking); if it fell past
+        # the truncation it takes the last slot instead of being dropped.
+        ordered = list(items)
+        trimmed = ordered[:MAX_PROPOSALS]
         try:
-            ordered = sorted(
-                list(items),
-                key=lambda it: (0 if bool(getattr(it, "preselect", False)) else 1),
-            )[:MAX_PROPOSALS]
+            pre = next(
+                it for it in ordered if bool(getattr(it, "preselect", False))
+            )
+        except StopIteration:
+            pre = None
         except Exception:
-            ordered = list(items[:MAX_PROPOSALS])
+            pre = None
+        if pre is not None:
+            try:
+                trimmed = [it for it in trimmed if it is not pre]
+                if len(trimmed) >= MAX_PROPOSALS:
+                    trimmed = trimmed[: MAX_PROPOSALS - 1]
+                trimmed.insert(0, pre)
+            except Exception:
+                trimmed = ordered[:MAX_PROPOSALS]
         out = []
-        for item in ordered:
+        for item in trimmed:
             try:
                 out.append(
                     RoslynProposal(
@@ -450,7 +462,10 @@ class _RoslynCompletionProviderBase:
         def _cb(message: dict) -> None:
             try:
                 items = intel.parse_completion(message or {}, text, offset)
-                items = intel.rank_for_prefix(items, prefix)
+                # Cull only: keep Roslyn relevance order. The framework
+                # filters again as the user types; re-sorting by match
+                # tier here (rank_for_prefix) would demote relevant rows.
+                items = [it for it in items if intel.completion_matches(it, prefix)]
                 incomplete = intel.completion_is_incomplete(message or {})
             except Exception:
                 items, incomplete = [], False

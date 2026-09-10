@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,37 @@ logger = logging.getLogger(__name__)
 #: When exceeded, the oldest chunk is dropped (counts tracked, not scanned).
 _MAX_OUTPUT_CHARS = 200000
 _OUTPUT_TRIM_CHARS = 50000
+
+#: Control sequences stripped from build/test output before display: ANSI
+#: color/style (CSI ... letter, OSC ... BEL/ST). dotnet progress + errors can
+#: carry these even when piped; the Output page is a plain TextView, so raw
+#: escapes would render as garbage. Lone carriage returns (spinner rewrites)
+#: are collapsed per line, keeping the final segment.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+
+
+def sanitize_output_text(text: str) -> str:
+    """Strip terminal control sequences from streamed tool output.
+
+    Pure/headless-testable. Applied at the single ``_append`` choke point
+    so every producer (build, run, restore, test) is covered at once.
+    """
+    if not text:
+        return ""
+    try:
+        text = _ANSI_RE.sub("", text)
+    except Exception:
+        return text
+    try:
+        # Windows line endings are real breaks, not spinner rewrites.
+        text = text.replace("\r\n", "\n")
+        return "\n".join(
+            line.rsplit("\r", 1)[-1] if "\r" in line else line
+            for line in text.split("\n")
+        )
+    except Exception:
+        return text
+
 
 try:
     import gi
@@ -106,6 +138,9 @@ else:
 
         def _append(self, text: str) -> None:
             if self._destroyed:
+                return
+            text = sanitize_output_text(text)
+            if not text:
                 return
             try:
                 buf = self.textview.get_buffer()

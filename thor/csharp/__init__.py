@@ -536,6 +536,32 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             logger.debug(f"refresh schedule failed: {e!r}")
             self._refresh_cb()
 
+    def _setting(self, key: str, default=None):
+        """Read a C# setting with a default; never raises.
+
+        The settings store may be unavailable (None) or raise (missing
+        state.toml section, corrupt file); every caller below runs on
+        hot paths (refresh, Roslyn startup, save) that must not crash.
+        """
+        try:
+            settings = getattr(self, "settings", None)
+            if settings is None:
+                return default
+            value = settings.get(key)
+            return default if value is None else value
+        except Exception as e:
+            logger.debug(f"csharp setting {key!r} failed: {e!r}")
+            return default
+
+    def _dotnet(self) -> str:
+        configured = str(self._setting("dotnet_executable", "dotnet") or "dotnet")
+        try:
+            resolved = dotnet_cli.resolve_dotnet(configured)
+        except Exception as e:
+            logger.debug(f"resolve_dotnet failed: {e!r}")
+            resolved = None
+        return resolved or configured
+
     def _refresh_cb(self) -> bool:
         """Debounce entry: discovery runs on a worker, publish on idle.
 
@@ -1532,9 +1558,15 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             if existing is not None:
                 self.window.set_active_tab(existing)
             else:
-                # ThorWindow signature: (location, encoding, line_pos, create, jump_to).
+                # ThorWindow signature: (location, encoding=None,
+                # line_pos=-1, col_pos=-1, create=True, jump_to=True).
                 self.window.create_tab_from_location(
-                    location, None, max(0, line0), True, True
+                    location,
+                    encoding=None,
+                    line_pos=max(0, line0),
+                    col_pos=max(0, char0),
+                    create=True,
+                    jump_to=True,
                 )
         except Exception as e:
             logger.debug(f"jump open failed: {e!r}")
@@ -1547,7 +1579,15 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             if doc is None:
                 return False
             try:
-                doc.goto_line(max(0, line0))
+                text = buffer_text(doc)
+                off = intel.position_to_offset(text, max(0, line0), max(0, char0))
+            except Exception:
+                off = -1
+            try:
+                if off >= 0:
+                    doc.place_cursor(doc.get_iter_at_offset(off))
+                else:
+                    doc.goto_line(max(0, line0))
             except Exception:
                 try:
                     doc.place_cursor(doc.get_iter_at_line(max(0, line0)))
@@ -1572,12 +1612,41 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
 
     def _on_goto_definition(self, _tracker, path: str, line: int, char: int) -> None:
         if not self._roslyn_ready():
+            self._warn_completion_once(
+                f"nav-not-ready-{getattr(self.roslyn, 'state', '?')}",
+                f"Roslyn server is {getattr(self.roslyn, 'state', '?')!r}; go-to-definition skipped for {path}.",
+                "Roslyn not ready — definition unavailable yet.",
+            )
             return
+        self._flush_completion_doc(path)
         self.roslyn.request(
             "textDocument/definition",
             intel.position_params(path, line, char),
             self._on_definition_response,
         )
+
+    def _problems_message(self, path: str) -> str:
+        """Short distinguishing message for a definition/reference row.
+
+        The File column already shows the basename, so the message shows
+        the workspace-relative path (disambiguates same-named files in
+        different folders); outside the workspace it falls back to
+        parent-dir + basename instead of the full absolute path.
+        """
+        try:
+            root = getattr(self._model, "root_dir", "") or ""
+            if root:
+                rel = os.path.relpath(path, root)
+                if rel and not rel.startswith(".."):
+                    return rel
+        except Exception as e:
+            logger.debug(f"problems message relpath failed: {e!r}")
+        try:
+            parent = os.path.basename(os.path.dirname(path))
+            base = os.path.basename(path)
+            return f"{parent}/{base}" if parent else base
+        except Exception:
+            return os.path.basename(path)
 
     def _on_definition_response(self, message: dict) -> None:
         targets = intel.parse_locations(message)
@@ -1589,13 +1658,19 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         self._jump_to(first.path, first.line, first.character)
         if len(targets) > 1 and self.output is not None:
             self.output.set_problems(
-                [("definition", os.path.basename(t.path), t.line + 1, t.path, t.path) for t in targets]
+                [("definition", os.path.basename(t.path), t.line + 1, self._problems_message(t.path), t.path) for t in targets]
             )
             self.output.show_problems()
 
     def _on_find_references(self, _tracker, path: str, line: int, char: int) -> None:
         if not self._roslyn_ready():
+            self._warn_completion_once(
+                f"nav-not-ready-{getattr(self.roslyn, 'state', '?')}",
+                f"Roslyn server is {getattr(self.roslyn, 'state', '?')!r}; find-references skipped for {path}.",
+                "Roslyn not ready — references unavailable yet.",
+            )
             return
+        self._flush_completion_doc(path)
         params = intel.position_params(path, line, char)
         params["context"] = {"includeDeclaration": True}
         self.roslyn.request("textDocument/references", params, self._on_references_response)
@@ -1608,7 +1683,7 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             self.output.set_status("No references found.")
             return
         self.output.set_problems(
-            [("reference", os.path.basename(t.path), t.line + 1, t.path, t.path) for t in targets]
+            [("reference", os.path.basename(t.path), t.line + 1, self._problems_message(t.path), t.path) for t in targets]
         )
         self.output.show_problems()
         self.output.set_status(f"{len(targets)} reference(s).")
@@ -1616,6 +1691,7 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
     def _on_hover_request(self, _tracker, path: str, line: int, char: int) -> None:
         if not self._roslyn_ready() or self.tracker is None:
             return
+        self._flush_completion_doc(path)
         try:
             seq = self.tracker.last_hover_seq()
         except Exception:
@@ -1649,7 +1725,13 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
     # -- formatting / code actions -----------------------------------
     def _format_doc_path(self, path: str) -> None:
         if not self._roslyn_ready():
+            self._warn_completion_once(
+                f"nav-not-ready-{getattr(self.roslyn, 'state', '?')}",
+                f"Roslyn server is {getattr(self.roslyn, 'state', '?')!r}; format skipped for {path}.",
+                "Roslyn not ready — format unavailable yet.",
+            )
             return
+        self._flush_completion_doc(path)
         doc = self._find_doc(path)
         if doc is None:
             return
@@ -2039,7 +2121,13 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
                         self.testpanel.set_status(f"{os.path.basename(project)}: {summary}")
                 if self.output is not None:
                     self._append_output(f"\n(exit {returncode})\n")
-                    self.output.set_status(f"{label}: exit {returncode}")
+                    if run.total:
+                        self.output.set_status(
+                            f"{label}: {run.passed} passed, {run.failed} failed, "
+                            f"{run.skipped} skipped (exit {returncode})"
+                        )
+                    else:
+                        self.output.set_status(f"{label}: exit {returncode}")
                 return False
 
             try:

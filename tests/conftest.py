@@ -19,7 +19,33 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tempfile
 import time
+
+import pytest
+
+
+# --- test-session state isolation -------------------------------------------
+# thor.logging_config installs an always-on DEBUG file handler into
+# $XDG_STATE_HOME/thor/logs/thor.log at the first thor import. Without this
+# redirect, every pytest run sprays test-double noise (FakeWindow tracebacks,
+# fixture paths, deliberate init-error tests) into the user's real log.
+# This runs at conftest import time — before any test module imports thor —
+# so the file handler lands in a per-session sandbox instead. Restored and
+# removed when the session ends.
+_TEST_STATE_HOME = tempfile.mkdtemp(prefix="thor-test-state-")
+_SAVED_STATE_HOME = os.environ.get("XDG_STATE_HOME")
+os.environ["XDG_STATE_HOME"] = _TEST_STATE_HOME
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _restore_test_state_home():
+    yield
+    if _SAVED_STATE_HOME is None:
+        os.environ.pop("XDG_STATE_HOME", None)
+    else:
+        os.environ["XDG_STATE_HOME"] = _SAVED_STATE_HOME
+    shutil.rmtree(_TEST_STATE_HOME, ignore_errors=True)
 
 
 def touch(path, content="x"):
