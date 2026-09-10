@@ -259,6 +259,8 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         self._doc_versions: dict[str, int] = {}
         self._pending_completion: dict | None = None
         self._completion_forward: tuple | None = None
+        # Coalesce refilter idles: one per main-loop turn, not one per keypress.
+        self._refilter_scheduled = False
         self._mark_views_configured: set = set()
         self._discovering_tests = False
         self._completion_warned = ""
@@ -866,10 +868,14 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             self._refresh_problems()
             for path, doc in self._iter_csharp_docs():
                 try:
-                    for uri, items in self.diagnostics.items():
-                        if roslyn_mod.file_uri(path) == uri:
-                            self._render_diagnostics(doc, items)
-                            break
+                    # One file_uri per open doc instead of one per
+                    # (doc, uri) pair; the old nested scan was O(open docs x
+                    # diagnostic uris) as_uri() calls per flush. `is not None`
+                    # (not truthiness): an empty list is a real "all clear"
+                    # that must still be rendered to drop stale markers.
+                    items = self.diagnostics.get(roslyn_mod.file_uri(path))
+                    if items is not None:
+                        self._render_diagnostics(doc, items)
                 except Exception as e:
                     logger.debug(f"diagnostics render failed: {e!r}")
         except Exception as e:
@@ -1296,6 +1302,7 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
 
     def _refilter_completion(self) -> None:
         """Narrow the visible list to the identifier at the cursor."""
+        self._refilter_scheduled = False
         popup = self.completion_popup
         if popup is None or not self._completion_visible():
             return
@@ -1455,10 +1462,19 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             pass
 
     def _schedule_refilter(self) -> None:
-        """Refilter after the pending keystroke is inserted/deleted."""
+        """Refilter after the pending keystroke is inserted/deleted.
+
+        Coalesced: a typing burst would otherwise queue one idle per
+        keystroke, each re-snapshotting the whole buffer for a prefix it
+        only needs the cursor's line for.
+        """
+        if getattr(self, "_refilter_scheduled", False):
+            return
         try:
+            self._refilter_scheduled = True
             GLib.idle_add(self._refilter_completion)
         except Exception:
+            self._refilter_scheduled = False
             try:
                 self._refilter_completion()
             except Exception:

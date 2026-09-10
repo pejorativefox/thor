@@ -143,18 +143,37 @@ def offset_to_position(text: str, offset: int) -> Tuple[int, int]:
     return line, _utf16_len(text[line_start:offset])
 
 
-def position_to_offset(text: str, line: int, character: int) -> int:
+def line_start_offsets(text: str) -> List[int]:
+    """Offsets at which each line starts; entry ``i`` is line ``i``'s start.
+
+    Always has at least one entry (0), so ``len(starts)`` equals the line
+    count. Build one per response when converting many LSP positions:
+    deriving it per call made ``parse_completion`` O(items x document size).
+    """
+    starts = [0]
+    idx = text.find("\n")
+    while idx != -1:
+        starts.append(idx + 1)
+        idx = text.find("\n", idx + 1)
+    return starts
+
+
+def position_to_offset(
+    text: str, line: int, character: int, starts: List[int] | None = None
+) -> int:
     """Convert a 0-based (line, character) pair into a char offset.
 
-    ``character`` is interpreted as UTF-16 code units per LSP.
+    ``character`` is interpreted as UTF-16 code units per LSP. Pass
+    ``starts`` (from :func:`line_start_offsets`) to avoid rebuilding the
+    line table on every call.
     """
-    lines = text.split("\n")
-    if not lines:
-        return 0
-    line = max(0, min(line, len(lines) - 1))
-    prefix = _utf16_slice(lines[line], max(0, character))
-    character = len(prefix)
-    return sum(len(lines[i]) + 1 for i in range(line)) + character
+    if starts is None:
+        starts = line_start_offsets(text)
+    line = max(0, min(line, len(starts) - 1))
+    line_start = starts[line]
+    line_end = starts[line + 1] - 1 if line + 1 < len(starts) else len(text)
+    prefix = _utf16_slice(text[line_start:line_end], max(0, character))
+    return line_start + len(prefix)
 
 
 _WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -299,6 +318,16 @@ def parse_completion(
     if not isinstance(raw_items, list):
         return []
     fallback_start, fallback_end = word_range_at(text, offset)
+    # One line table for the whole response: every item's textEdit converts
+    # 2-4 positions, and rebuilding the table per call made this loop
+    # O(items x document size) on the GTK main thread. Built on first use so
+    # a response whose items carry no textEdit pays no scan at all.
+    _starts: List[List[int]] = []
+
+    def _line_table() -> List[int]:
+        if not _starts:
+            _starts.append(line_start_offsets(text))
+        return _starts[0]
     items: List[CompletionItem] = []
     indexed: List[tuple[int, CompletionItem]] = []
     for index, raw in enumerate(raw_items[:max_items]):
@@ -330,12 +359,12 @@ def parse_completion(
             if isinstance(replace_range, dict) and isinstance(insert_range, dict):
                 s = insert_range.get("start", {})
                 e = insert_range.get("end", {})
-                insert_start = position_to_offset(text, int(s.get("line", 0)), int(s.get("character", 0)))
-                insert_end = position_to_offset(text, int(e.get("line", 0)), int(e.get("character", 0)))
+                insert_start = position_to_offset(text, int(s.get("line", 0)), int(s.get("character", 0)), _line_table())
+                insert_end = position_to_offset(text, int(e.get("line", 0)), int(e.get("character", 0)), _line_table())
                 s = replace_range.get("start", {})
                 e = replace_range.get("end", {})
-                start = position_to_offset(text, int(s.get("line", 0)), int(s.get("character", 0)))
-                end = position_to_offset(text, int(e.get("line", 0)), int(e.get("character", 0)))
+                start = position_to_offset(text, int(s.get("line", 0)), int(s.get("character", 0)), _line_table())
+                end = position_to_offset(text, int(e.get("line", 0)), int(e.get("character", 0)), _line_table())
                 if not (insert_start <= offset <= insert_end and start <= offset <= end):
                     logger.debug(
                         "parse_completion: textEdit insert/replace ignores cursor "
@@ -346,8 +375,8 @@ def parse_completion(
             elif isinstance(single_range, dict):
                 s = single_range.get("start", {})
                 e = single_range.get("end", {})
-                start = position_to_offset(text, int(s.get("line", 0)), int(s.get("character", 0)))
-                end = position_to_offset(text, int(e.get("line", 0)), int(e.get("character", 0)))
+                start = position_to_offset(text, int(s.get("line", 0)), int(s.get("character", 0)), _line_table())
+                end = position_to_offset(text, int(e.get("line", 0)), int(e.get("character", 0)), _line_table())
                 if not (start <= offset <= end):
                     logger.debug(
                         "parse_completion: textEdit range ignores cursor "

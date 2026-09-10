@@ -258,9 +258,13 @@ class FuzzyIndex:
         again per row (which would double the DP cost per keystroke).
         """
         terms = split_terms((query or "").strip())
-        paths = [path for path, _, _ in self._entries]
         if not terms:
-            return [(path, 0.0, []) for path in paths[:limit]] if limit > 0 else []
+            if limit <= 0:
+                return []
+            # Built lazily: this list is only used for the empty query, and
+            # materialising it on every keystroke costs a full pass over the
+            # whole corpus for a result that is then discarded.
+            return [(path, 0.0, []) for path, _hl, _b in self._entries[:limit]]
         if limit <= 0:
             return []
         scored: list[tuple[float, int, str, list[int]]] = []

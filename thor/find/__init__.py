@@ -40,6 +40,10 @@ from ..keys import decode_key_event
 
 TAG_MATCH = "thor-find-match"
 TAG_CURRENT = "thor-find-current"
+#: Debounce for buffer edits while the bar is open. Each re-scan is a full
+#: document snapshot + regex + up to 1000 tag operations (measured ~27 ms on
+#: a 450k-char buffer), so a typing burst must coalesce into one scan.
+_BUFFER_CHANGE_DEBOUNCE_MS = 150
 # Atom One Dark friendly, visible on #282C34 base
 MATCH_BG = "#5a4a1a"  # dark amber
 CURRENT_BG = "#9a7b0a"  # brighter amber for current
@@ -292,6 +296,7 @@ class FindManager:
         self._case_sensitive: bool = False
         self._tab_handler: int | None = None
         self._buffer_handler: int | None = None
+        self._pending_change_source: int | None = None
         self._current_doc = None
 
         if Gtk is None or window is None:
@@ -388,6 +393,7 @@ class FindManager:
         self._on_query_changed()
 
     def hide(self) -> None:
+        self._cancel_pending_change()
         if self.bar is None:
             return
         # clear highlights in active doc (or last doc)
@@ -422,6 +428,7 @@ class FindManager:
     # -- internals ------------------------------------------------------
 
     def _track_buffer(self) -> None:
+        self._cancel_pending_change()
         old_doc = self._current_doc
         # disconnect old
         if self._buffer_handler and old_doc is not None:
@@ -458,8 +465,35 @@ class FindManager:
     def _on_buffer_changed(self) -> None:
         if not self.is_visible():
             return
-        # buffer edited → recompute hits but keep current query
-        self._on_query_changed(select=False)
+        # buffer edited → recompute hits but keep current query.
+        # Debounced so a typing burst costs one scan instead of one per
+        # keystroke (each is a full snapshot + regex + up to 1000 tags).
+        if GLib is None:
+            self._on_query_changed(select=False)
+            return
+        try:
+            if self._pending_change_source is not None:
+                GLib.source_remove(self._pending_change_source)
+            self._pending_change_source = GLib.timeout_add(
+                _BUFFER_CHANGE_DEBOUNCE_MS, self._fire_buffer_change
+            )
+        except Exception as e:
+            logger.debug("find change debounce failed: %r", e, exc_info=True)
+            self._on_query_changed(select=False)
+
+    def _fire_buffer_change(self) -> bool:
+        self._pending_change_source = None
+        if self.is_visible():
+            self._on_query_changed(select=False)
+        return False
+
+    def _cancel_pending_change(self) -> None:
+        src, self._pending_change_source = self._pending_change_source, None
+        if src is not None and GLib is not None:
+            try:
+                GLib.source_remove(src)
+            except Exception:
+                logger.debug("find pending change remove failed", exc_info=True)
 
     def _on_query_changed(self, select: bool = True) -> None:
         if self.bar is None:
@@ -561,6 +595,7 @@ class FindManager:
             logger.debug(f"select_hit failed: {e!r}")
 
     def _go_next(self) -> None:
+        self._flush_pending_change()
         if not self._hits:
             return
         _, doc, view = _get_active_doc_view(self.window)
@@ -577,7 +612,20 @@ class FindManager:
         self._update_label()
         self._select_hit(doc, view, self._hits[nxt])
 
+    def _flush_pending_change(self) -> None:
+        """Apply a debounced buffer edit now.
+
+        Navigation must act on current hits, so F3/Enter after an edit must
+        not read a match list that is up to one debounce interval stale.
+        """
+        if self._pending_change_source is None:
+            return
+        self._cancel_pending_change()
+        if self.is_visible():
+            self._on_query_changed(select=False)
+
     def _go_prev(self) -> None:
+        self._flush_pending_change()
         if not self._hits:
             return
         _, doc, view = _get_active_doc_view(self.window)
@@ -672,6 +720,10 @@ def detach(window) -> None:
                 mgr._current_doc.disconnect(mgr._buffer_handler)
             except Exception:
                 pass
+        try:
+            mgr._cancel_pending_change()
+        except Exception:
+            pass
         try:
             if getattr(window, "_searchbar", None) is mgr.bar:
                 window._searchbar = None

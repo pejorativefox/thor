@@ -62,10 +62,16 @@ def file_uri(path: str) -> str:
 
 def full_document_range(text: str) -> dict:
     """LSP range covering all of `text` (for full-document sync changes)."""
-    lines = text.split("\n")
+    # count/rfind instead of split: this runs on every didChange (i.e. every
+    # completion keystroke on a full-document sync) and must not materialise
+    # a list of every line just to find the last line index and its length.
+    last_newline = text.rfind("\n")
     return {
         "start": {"line": 0, "character": 0},
-        "end": {"line": len(lines) - 1, "character": len(lines[-1])},
+        "end": {
+            "line": text.count("\n"),
+            "character": len(text) - last_newline - 1,
+        },
     }
 
 

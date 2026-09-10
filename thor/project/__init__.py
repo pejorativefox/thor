@@ -97,6 +97,10 @@ GIT_DIR_DEBOUNCE_MS = 500
 #: `.git/` (fetch/gc/index rewrite) from keeping the editor busy.
 GIT_REFRESH_MIN_INTERVAL_S = 10.0
 
+#: Wait slice for a running `git status`. Short enough that a generation
+#: bump still kills the child promptly, long enough not to busy-wait.
+_GIT_STATUS_POLL_S = 0.05
+
 #: Debounce for filesystem-triggered tree rebuilds (create/delete/move).
 #: Off-thread walk + idle populate, so a shorter window than git feels live
 #: without hammering the disk during bursts (e.g. `git checkout`).
@@ -822,11 +826,19 @@ if Gtk is not None:
                 except Exception:
                     logger.debug("git proc kill failed", exc_info=True)
 
-        def _run_git_statuses(self, git_root: str, generation: int, timeout_s: float = 3.0) -> dict:
-            """Run `git status` with a short timeout; abort on generation bump."""
+        def _run_git_statuses(
+            self, git_root: str, generation: int, timeout_s: float = 3.0
+        ) -> dict | None:
+            """Run `git status` with a short timeout; abort on generation bump.
+
+            Returns the parsed status map, or None when the query was
+            indeterminate (spawn failure, generation bump, timeout, non-zero
+            exit, parse error). None must NOT be applied as "clean tree": an
+            aborted query reported as {} used to wipe every git color.
+            """
             gs = _gitstatus
             if gs is None:
-                return {}
+                return None
             try:
                 proc = subprocess.Popen(
                     ["git", "-c", "core.quotepath=false", "status",
@@ -837,7 +849,7 @@ if Gtk is not None:
                 )
             except Exception:
                 logger.debug(f"git status spawn failed for {git_root}", exc_info=True)
-                return {}
+                return None
             lock = getattr(self, "_git_procs_lock", None)
             try:
                 if lock is not None:
@@ -866,17 +878,29 @@ if Gtk is not None:
                                 proc.kill()
                             except Exception:
                                 logger.debug("git proc kill on bump failed", exc_info=True)
-                            return {}
+                            try:
+                                proc.communicate()
+                            except Exception:
+                                logger.debug("git status drain failed", exc_info=True)
+                            return None
                     except Exception:
                         logger.debug("git generation check failed", exc_info=True)
-                        return {}
+                        return None
+                    # communicate() drains stdout concurrently with the wait.
+                    # Polling poll() while nothing read the pipe let the child
+                    # block as soon as it filled the ~64 KiB pipe buffer
+                    # (`git status -uall` output passes that at a few thousand
+                    # entries), so it never exited, the deadline fired, and the
+                    # kill discarded the result. Retrying after TimeoutExpired
+                    # loses no output, so a generation bump still kills quickly.
                     try:
-                        rc = proc.poll()
-                    except Exception:
-                        logger.debug("git proc poll failed", exc_info=True)
-                        return {}
-                    if rc is not None:
+                        out, _ = proc.communicate(timeout=_GIT_STATUS_POLL_S)
                         break
+                    except subprocess.TimeoutExpired:
+                        pass
+                    except Exception:
+                        logger.debug("git status communicate failed", exc_info=True)
+                        return None
                     try:
                         now = time.monotonic()
                     except Exception:
@@ -887,28 +911,26 @@ if Gtk is not None:
                             proc.kill()
                         except Exception:
                             logger.debug("git proc kill on timeout failed", exc_info=True)
+                        try:
+                            proc.communicate()
+                        except Exception:
+                            logger.debug("git status drain failed", exc_info=True)
                         logger.debug(f"git status timeout for {git_root}")
-                        return {}
-                    time.sleep(0.05)
-                try:
-                    out, _ = proc.communicate()
-                except Exception:
-                    logger.debug("git status communicate failed", exc_info=True)
-                    return {}
+                        return None
                 try:
                     if generation != self._git_generation:
-                        return {}
+                        return None
                 except Exception:
                     logger.debug("git generation check failed", exc_info=True)
-                    return {}
+                    return None
                 if proc.returncode != 0:
                     logger.debug(f"git status rc={proc.returncode} for {git_root}")
-                    return {}
+                    return None
                 try:
                     return gs.parse_porcelain_z(out or b"", os.path.abspath(git_root))
                 except Exception:
                     logger.debug(f"git status parse failed for {git_root}", exc_info=True)
-                    return {}
+                    return None
             finally:
                 try:
                     if lock is not None:
@@ -930,6 +952,10 @@ if Gtk is not None:
 
         def _query_git_thread(self, root: str, generation: int) -> None:
             statuses: dict = {}
+            # An aborted/failed query must not be published as "clean tree":
+            # that used to recolor every row to None and, because a repeat
+            # failure produced the same {}, the colors never came back.
+            indeterminate = False
             try:
                 git_root = getattr(self, "_git_root_cached", None)
                 if not git_root or not os.path.isdir(git_root):
@@ -942,15 +968,22 @@ if Gtk is not None:
                     try:
                         runner = getattr(self, "_run_git_statuses", None)
                         if callable(runner):
-                            statuses = runner(git_root, generation)
+                            result = runner(git_root, generation)
+                            if result is None:
+                                indeterminate = True
+                            else:
+                                statuses = result
                         else:
                             statuses = _gitstatus.get_git_statuses(git_root)
                     except Exception:
                         logger.debug(f"git status failed for {root}", exc_info=True)
-                        statuses = {}
+                        indeterminate = True
             except Exception:
                 logger.debug(f"git status failed for {root}", exc_info=True)
-                statuses = {}
+                indeterminate = True
+            if indeterminate:
+                logger.debug(f"git status indeterminate for {root}; keeping previous colors")
+                return
             try:
                 if generation != self._git_generation:
                     return

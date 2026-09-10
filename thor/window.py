@@ -190,13 +190,33 @@ if Gtk is not None and GObject is not None:
             except Exception:
                 logger.debug("panel notify wiring failed", exc_info=True)
 
+            # A handle drag emits notify::position per mouse-motion step
+            # (~60/s). save_panel_state() is a full atomic rewrite of
+            # state.toml with two fsync()s, so it must never run directly on
+            # this path; coalesce into the same 200 ms debounce the
+            # configure-event handler uses. Direct saves stay on the rare
+            # teardown-ish events (unmap/delete/destroy) where a pending
+            # timer could be dropped before it fires.
+            def _schedule_save_state():
+                if GLib is None:
+                    self.save_panel_state()
+                    return
+                try:
+                    if self._save_state_timeout_id is not None:
+                        GLib.source_remove(self._save_state_timeout_id)
+                    self._save_state_timeout_id = GLib.timeout_add(
+                        200, _debounced_save_state
+                    )
+                except Exception:
+                    logger.debug("save state debounce failed", exc_info=True)
+
             def _on_hpaned_pos(*_a):
                 try:
                     if self._side_panel.get_visible() and self._side_panel.get_n_items() > 0:
                         pos = self._hpaned.get_position()
                         if pos > 80:
                             self._panel_state["side_panel_size"] = pos
-                            self.save_panel_state()
+                            _schedule_save_state()
                 except Exception:
                     pass
 
@@ -208,7 +228,7 @@ if Gtk is not None and GObject is not None:
                         bottom_h = h - self._vpaned.get_position()
                         if bottom_h > 50:
                             self._panel_state["bottom_panel_size"] = bottom_h
-                            self.save_panel_state()
+                            _schedule_save_state()
                 except Exception:
                     pass
 
@@ -268,9 +288,7 @@ if Gtk is not None and GObject is not None:
                             self._panel_state["window_x"] = int(x)
                             self._panel_state["window_y"] = int(y)
                     if GLib is not None:
-                        if self._save_state_timeout_id is not None:
-                            GLib.source_remove(self._save_state_timeout_id)
-                        self._save_state_timeout_id = GLib.timeout_add(200, _debounced_save_state)
+                        _schedule_save_state()
                 except Exception:
                     pass
                 return False
@@ -288,7 +306,7 @@ if Gtk is not None and GObject is not None:
                                 self._panel_state["window_height"] = int(h)
                                 self._panel_state["window_x"] = int(x)
                                 self._panel_state["window_y"] = int(y)
-                        self.save_panel_state()
+                        _schedule_save_state()
                 except Exception:
                     pass
                 return False

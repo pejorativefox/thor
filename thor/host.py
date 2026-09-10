@@ -114,29 +114,3 @@ def detach_builtin_features(window) -> None:
         except Exception as e:
             logger.debug("%s detach failed: %r", name, e, exc_info=True)
 
-
-    # Restore loaded panel states (visibility, sizes, active tab)
-    if hasattr(window, "_restore_panel_state"):
-        try:
-            window._restore_panel_state()
-        except Exception as e:
-            logger.debug("restore panel state failed: %r", e, exc_info=True)
-    # Re-apply saved fonts (editor, terminal, side panel)
-    try:
-        from thor.fonts import apply_all
-
-        apply_all(window)
-    except Exception as e:
-        logger.debug("restore fonts failed: %r", e, exc_info=True)
-
-    # Always ensure the active editor view is focused on startup
-    if hasattr(window, "focus_active_editor"):
-        try:
-            from gi.repository import GLib  # type: ignore
-
-            GLib.idle_add(window.focus_active_editor)
-        except Exception:
-            try:
-                window.focus_active_editor()
-            except Exception:
-                pass
