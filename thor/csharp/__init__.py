@@ -163,6 +163,14 @@ PROBLEMS_THROTTLE_S = 0.5
 #: can carry thousands of diagnostics; the panel only needs the head.
 PROBLEMS_MAX_ROWS = 500
 
+#: Cap on gutter marks per file. A broken generated file can carry
+#: thousands of diagnostics; each mark invalidates the gutter and a full
+#: re-mark sweep on every keystroke/tab-switch can wedge the main loop
+#: inside a GtkSourceView gutter draw (frozen UI, no log trail — the
+#: 2026-09-11 freeze). Tags still render for every diagnostic; only the
+#: gutter icons are capped.
+DIAG_MAX_MARKS_PER_FILE = 200
+
 
 def _gio_file_path(location) -> str | None:
     try:
@@ -279,6 +287,16 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         # entry when the watchdog fires means idle delivery starved.
         self._pending_publish = None
         self._last_publish_gen = 0
+        # Monotonic timestamp of when _pending_publish was queued (set on
+        # the refresh worker, cleared on publish). Lets the stall monitor
+        # below detect a main loop that never returns from a draw.
+        self._pending_publish_since: float | None = None
+        self._stall_thread: threading.Thread | None = None
+        self._stall_stop: threading.Event | None = None
+        # Per-path fingerprint of the last rendered diagnostics
+        # (tuple of (line, character, severity, message)); skips redundant
+        # gutter/tag sweeps when notifications re-fire with identical data.
+        self._diag_fingerprints: dict[str, tuple] = {}
         # Diagnostics coalescing: one pending source + last Problems build.
         self._diag_source: int | None = None
         self._diag_pending = False
@@ -353,6 +371,17 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
 
     def do_deactivate(self) -> None:
         logger.debug("deactivate")
+        try:
+            stop = getattr(self, "_stall_stop", None)
+            if stop is not None:
+                stop.set()
+        except Exception as e:
+            logger.debug(f"deactivate stall stop failed: {e!r}")
+        try:
+            self._pending_publish = None
+            self._pending_publish_since = None
+        except Exception as e:
+            logger.debug(f"deactivate publish reset failed: {e!r}")
         if self._refresh_source is not None:
             try:
                 GLib.source_remove(self._refresh_source)
@@ -630,6 +659,14 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
                 logger.debug(f"refresh trees failed: {e!r}")
             self._pending_publish = (model, gen)
             try:
+                self._pending_publish_since = time.monotonic()
+            except Exception:
+                self._pending_publish_since = None
+            try:
+                self._ensure_stall_monitor()
+            except Exception as e:
+                logger.debug(f"stall monitor ensure failed: {e!r}")
+            try:
                 GLib.idle_add(self._publish_solution, model, gen)
             except Exception as e:
                 logger.debug(f"refresh publish schedule failed: {e!r}")
@@ -657,6 +694,7 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         self._last_publish_gen = gen
         if self._pending_publish is not None and self._pending_publish[1] == gen:
             self._pending_publish = None
+        self._pending_publish_since = None
         try:
             self._refresh_solution(model)
         except OSError as e:
@@ -692,6 +730,106 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             logger.debug(f"watchdog publish failed: {e!r}")
         return False
 
+    @staticmethod
+    def _solution_signature(model) -> tuple | None:
+        """Hashable identity of a solution: path + sorted project paths."""
+        try:
+            if model is None:
+                return None
+            return (model.path, tuple(sorted(p.path for p in model.projects)))
+        except Exception as e:
+            logger.debug(f"solution signature failed: {e!r}")
+            return None
+
+    def _ensure_stall_monitor(self) -> None:
+        """Start the off-loop stall heartbeat (once per manager lifetime).
+
+        The GLib watchdog above cannot fire while the main loop is stuck
+        inside a single never-returning draw (2026-09-11 freeze: neither
+        the idle publish nor the timeout ran). This plain-thread monitor
+        only *logs* — it never touches GTK — so the next freeze leaves a
+        trail with the pending gen, its age, and the queued model shape.
+        """
+        try:
+            if self._stall_thread is not None and self._stall_thread.is_alive():
+                return
+        except Exception:
+            pass
+        try:
+            stop = threading.Event()
+            self._stall_stop = stop
+            thread = threading.Thread(
+                target=self._stall_heartbeat,
+                args=(stop,),
+                name="thor-csharp-stallmon",
+                daemon=True,
+            )
+            self._stall_thread = thread
+            thread.start()
+        except Exception as e:
+            logger.debug(f"stall monitor start failed: {e!r}")
+
+    def _stall_heartbeat(self, stop) -> None:
+        """Log a pending publish the main loop fails to collect in time."""
+        warned_gen = None
+        try:
+            interval = max(0.5, (PUBLISH_WATCHDOG_MS / 1000.0) / 4.0)
+        except Exception:
+            interval = 0.5
+        while True:
+            try:
+                if stop.wait(interval):
+                    return
+            except Exception:
+                return
+            try:
+                pending = self._pending_publish
+                since = self._pending_publish_since
+            except Exception:
+                continue
+            if pending is None or since is None:
+                warned_gen = None
+                continue
+            gen = pending[1]
+            try:
+                if gen != self._refresh_gen or gen == self._last_publish_gen:
+                    warned_gen = None
+                    continue
+            except Exception:
+                continue
+            try:
+                age = time.monotonic() - since
+            except Exception:
+                continue
+            try:
+                threshold = PUBLISH_WATCHDOG_MS / 1000.0
+            except Exception:
+                threshold = 2.0
+            if age < threshold or warned_gen == gen:
+                continue
+            warned_gen = gen
+            try:
+                model = pending[0]
+                sig = self._solution_signature(model)
+                nprojects = len(sig[1]) if sig is not None else "?"
+                path = sig[0] if sig is not None else "?"
+            except Exception:
+                path, nprojects = "?", "?"
+            try:
+                ndiag_files = len(self.diagnostics)
+                ndiag = sum(len(v) for v in self.diagnostics.values())
+            except Exception:
+                ndiag_files, ndiag = "?", "?"
+            try:
+                logger.error(
+                    f"main-loop stall suspected: publish gen={gen} uncollected "
+                    f"for {age * 1000:.0f}ms (model={path} projects={nprojects} "
+                    f"diag_files={ndiag_files} diags={ndiag}); main loop may be "
+                    "stuck in a gutter draw"
+                )
+            except Exception:
+                pass
+
     def _refresh_solution(self, model=None) -> None:
         if model is None and self._model is not None:
             # Worker found nothing usable (or crashed); keep the last good
@@ -700,8 +838,39 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             if self.output is not None:
                 self.output.set_status("Solution refresh failed — keeping previous.")
             return
+        old_sig = self._solution_signature(self._model)
         if model is not None:
             self._model = model
+            new_sig = self._solution_signature(model)
+            if old_sig is not None and new_sig is not None and old_sig == new_sig:
+                # Tab-switch refresh rediscovered the same solution: the
+                # TreeStore rebuild + full re-sync of every open buffer on
+                # this path fed the 2026-09-11 gutter-draw freeze. Refresh
+                # only the newly active document; diagnostics/explorer are
+                # already correct for this model.
+                logger.debug("refresh: solution unchanged, syncing active doc only")
+                if self.output is not None:
+                    try:
+                        if self._model.path:
+                            self.output.set_status(
+                                f"{os.path.basename(self._model.path)} — "
+                                f"{len(self._model.projects)} projects"
+                            )
+                        else:
+                            self.output.set_status(
+                                "No .sln/.slnx found — showing nearby .csproj files"
+                            )
+                    except Exception as e:
+                        logger.debug(f"refresh status failed: {e!r}")
+                try:
+                    active = self._active_path()
+                except Exception:
+                    active = None
+                if active:
+                    self._sync_doc(active)
+                if self._model.path or self._model.projects:
+                    self._ensure_roslyn()
+                return
         elif self._model is None:
             # Synchronous fallback (tests/headless): load inline.
             active = self._active_path()
@@ -887,6 +1056,10 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         except Exception:
             pass
         self._doc_versions.pop(path, None)
+        try:
+            self._diag_fingerprints.pop(path, None)
+        except Exception:
+            pass
 
     # -- diagnostics -------------------------------------------------
     def _on_diagnostics(self, uri: str, raw: list) -> None:
@@ -1015,6 +1188,32 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
         return tags
 
     def _render_diagnostics(self, doc, items: list) -> None:
+        # Fingerprint first: identical re-notifications must not touch the
+        # buffer at all — every tag/mark sweep invalidates the gutter.
+        try:
+            fp_key = doc_path(doc)
+        except Exception:
+            fp_key = None
+        if fp_key is None:
+            try:
+                fp_key = f"id:{id(doc)}"
+            except Exception:
+                fp_key = "unknown"
+        try:
+            fingerprint = tuple(
+                (d.line, d.character, d.severity, d.message) for d in items
+            )
+        except Exception as e:
+            logger.debug(f"diagnostics fingerprint failed: {e!r}")
+            fingerprint = None
+        if fingerprint is not None:
+            try:
+                if self._diag_fingerprints.get(fp_key) == fingerprint:
+                    logger.debug(f"diagnostics unchanged for {fp_key}, skipping")
+                    return
+                self._diag_fingerprints[fp_key] = fingerprint
+            except Exception as e:
+                logger.debug(f"diagnostics fingerprint compare failed: {e!r}")
         try:
             start, end = doc.get_bounds()
         except Exception:
@@ -1029,6 +1228,7 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
             doc.remove_source_marks(start, end, DIAG_MARK_CATEGORY)
         except Exception:
             pass
+        marked = 0
         for diag in items:
             tag = tags.get(diag.severity)
             try:
@@ -1040,12 +1240,20 @@ class CSharpManager(_BaseManager):  # type: ignore[misc]
                     continue
                 if tag is not None:
                     doc.apply_tag(tag, it, it_end)
+                if marked >= DIAG_MAX_MARKS_PER_FILE:
+                    continue
                 try:
                     doc.create_source_mark(None, DIAG_MARK_CATEGORY, it)
+                    marked += 1
                 except Exception:
                     pass
             except Exception:
                 continue
+        if marked >= DIAG_MAX_MARKS_PER_FILE and len(items) > marked:
+            logger.debug(
+                f"diagnostics marks capped at {DIAG_MAX_MARKS_PER_FILE} "
+                f"for {fp_key} ({len(items)} diagnostics)"
+            )
         self._configure_marks(doc)
 
     @staticmethod

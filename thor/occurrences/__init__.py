@@ -166,7 +166,11 @@ class OccurrencesManager:
         except Exception as e:
             logger.debug(f"changed connect failed: {e!r}")
         record = {"view": view, "doc": doc, "ids": ids, "pending": None,
-                  "strip": None, "strip_ids": [], "lines": [], "line_count": 1}
+                  "strip": None, "strip_ids": [], "lines": [], "line_count": 1,
+                  # Fingerprint of the last applied hit set. Identical
+                  # cursor stops skip the buffer entirely — every tag/mark
+                  # sweep invalidates the gutter (2026-09-11 freeze).
+                  "hits_fp": None}
         self._tracked[key] = record
         try:
             self._configure_marks(view)
@@ -403,6 +407,18 @@ class OccurrencesManager:
             return None
 
     def _apply(self, doc, record: dict, hits: list) -> None:
+        try:
+            _line_count = doc.get_line_count()
+        except Exception:
+            _line_count = 0
+        try:
+            _fingerprint = (tuple(hits), _line_count)
+        except Exception as e:
+            logger.debug(f"occurrences fingerprint failed: {e!r}")
+            _fingerprint = None
+        if _fingerprint is not None and record.get("hits_fp") == _fingerprint:
+            logger.debug("occurrences unchanged, skipping")
+            return
         tag = self._ensure_tag(doc)
         try:
             start, end = doc.get_bounds()
@@ -446,6 +462,7 @@ class OccurrencesManager:
             except Exception:
                 continue
         record["lines"] = lines
+        record["hits_fp"] = _fingerprint
         try:
             record["line_count"] = line_count if line_count else 1
         except Exception:
@@ -458,6 +475,12 @@ class OccurrencesManager:
                 pass
 
     def _clear_doc(self, doc, record: dict | None = None) -> None:
+        if record is not None:
+            try:
+                if record.get("lines") == [] and record.get("hits_fp") is None:
+                    return
+            except Exception:
+                pass
         try:
             start, end = doc.get_bounds()
         except Exception:
@@ -478,6 +501,7 @@ class OccurrencesManager:
             logger.debug(f"clear marks failed: {e!r}")
         if record is not None:
             record["lines"] = []
+            record["hits_fp"] = None
             strip = record.get("strip")
             if strip is not None:
                 try:

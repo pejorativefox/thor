@@ -271,6 +271,10 @@ class GitDiffManager:
         self._in_flight: set = set()
         self._git_monitors: list = []
         self._root_monitors: dict = {}
+        # Last-applied gutter line sets per path: (added, modified,
+        # deleted) as tuples. Identical results skip the buffer entirely —
+        # every remove/create_source_mark sweep invalidates the gutter.
+        self._applied: dict = {}
 
     # -- lifecycle ---------------------------------------------------
 
@@ -351,6 +355,7 @@ class GitDiffManager:
         try:
             self._generations.clear()
             self._pending_paths.clear()
+            self._applied.clear()
         except Exception:
             pass
         for _key, entry in list(self._doc_handlers.items()):
@@ -407,6 +412,10 @@ class GitDiffManager:
                 self._generations.pop(path, None)
             except Exception:
                 pass
+            try:
+                self._applied.pop(path, None)
+            except Exception:
+                pass
         try:
             views = self.window.get_views()
             live = {id(v) for v in views}
@@ -415,7 +424,26 @@ class GitDiffManager:
             pass
 
     def _on_active_tab_changed(self, window, *_args) -> None:
-        self._schedule_active()
+        # Active doc only: scheduling every open doc on each tab switch
+        # multiplies git subprocesses and gutter rewrites into a redraw
+        # storm (2026-09-11 freeze). Background docs refresh lazily when
+        # activated; saves still schedule their own path explicitly.
+        try:
+            doc = window.get_active_document()
+        except Exception:
+            doc = None
+        if doc is None:
+            return
+        try:
+            self._watch_doc(doc)
+        except Exception as e:
+            logger.debug(f"active-tab watch failed: {e!r}")
+        try:
+            path = doc_path(doc)
+        except Exception:
+            path = None
+        if path:
+            self._schedule_paths([path])
 
     def _on_tab_state_changed(self, window, *args) -> None:
         """Detect save completion via SAVING -> NORMAL transitions."""
@@ -790,6 +818,22 @@ class GitDiffManager:
         doc = self._find_doc(path)
         if doc is None:
             return False
+        try:
+            fingerprint = (
+                tuple(result.get("added", [])),
+                tuple(result.get("modified", [])),
+                tuple(result.get("deleted", [])),
+            )
+        except Exception as e:
+            logger.debug(f"gutter fingerprint failed for {path}: {e!r}")
+            fingerprint = None
+        if fingerprint is not None:
+            try:
+                if self._applied.get(path) == fingerprint:
+                    logger.debug(f"gutter marks unchanged for {path}, skipping")
+                    return False
+            except Exception as e:
+                logger.debug(f"gutter fingerprint compare failed: {e!r}")
         categories = (
             (_diffparse.CATEGORY_ADDED, result.get("added", [])),
             (_diffparse.CATEGORY_MODIFIED, result.get("modified", [])),
@@ -820,6 +864,11 @@ class GitDiffManager:
                     doc.create_source_mark(None, category, it)
                 except Exception:
                     continue
+        if fingerprint is not None:
+            try:
+                self._applied[path] = fingerprint
+            except Exception as e:
+                logger.debug(f"gutter fingerprint store failed: {e!r}")
         self._configure_marks(doc)
         return False
 
