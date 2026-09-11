@@ -462,11 +462,24 @@ if Gtk is not None and GObject is not None:
                 logger.debug("_restore_panel_state failed: %r", e, exc_info=True)
 
         def focus_active_editor(self) -> None:
-            """Always place focus on the active editor view on startup or focus requests.
+            """Place focus on the active editor view on startup or focus requests.
 
-            Returns None so this is safe to pass directly to GLib.idle_add
-            (a truthy return would re-arm the idle source forever).
+            Skips when the find bar entry owns focus so a tab switch never
+            yanks the user out of an active search. Returns None so this is
+            safe to pass directly to GLib.idle_add (a truthy return would
+            re-arm the idle source forever).
             """
+            try:
+                bar = getattr(self, "_searchbar", None)
+                entry = getattr(bar, "entry", None) if bar is not None else None
+                if entry is not None:
+                    try:
+                        if bar.get_visible() and entry.is_focus():
+                            return
+                    except Exception:
+                        pass
+            except Exception:
+                logger.debug("focus_active_editor: find guard failed", exc_info=True)
             try:
                 tab = self.get_active_tab()
                 if tab is not None:
@@ -476,6 +489,28 @@ if Gtk is not None and GObject is not None:
                         return
             except Exception:
                 logger.debug("focus_active_editor failed", exc_info=True)
+
+        def _focus_editor_soon(self) -> None:
+            """Schedule focus on the active editor view via idle_add.
+
+            Deferred so the notebook page switch has completed and the view
+            is mapped when grab_focus() runs; falls back to a direct call
+            headless. Never raises (keybind fakes and teardown paths rely
+            on that). The find-entry guard lives in focus_active_editor
+            and applies at fire time.
+            """
+            try:
+                if getattr(self, "_destroyed", False):
+                    return
+                if GLib is not None:
+                    try:
+                        GLib.idle_add(self.focus_active_editor)
+                        return
+                    except Exception:
+                        logger.debug("_focus_editor_soon: idle_add failed", exc_info=True)
+                self.focus_active_editor()
+            except Exception:
+                logger.debug("_focus_editor_soon failed", exc_info=True)
 
         def toggle_word_wrap(self) -> bool:
             """Flip the window-wide word-wrap setting; returns the new state.
@@ -787,6 +822,12 @@ if Gtk is not None and GObject is not None:
                 tab.destroy()
             except Exception:
                 logger.debug("close_tab: destroy failed", exc_info=True)
+            # The closed tab may have owned focus — hand it to the tab
+            # that became active (no-op when the notebook is now empty).
+            try:
+                self._focus_editor_soon()
+            except Exception:
+                logger.debug("close_tab: refocus failed", exc_info=True)
 
         def close_all_tabs(self) -> None:
             for tab in list(self._tabs):
@@ -801,6 +842,7 @@ if Gtk is not None and GObject is not None:
             for i in range(n):
                 if self._notebook.get_nth_page(i) is tab:
                     self._notebook.set_current_page(i)
+                    self._focus_editor_soon()
                     return
 
         # ------------------------------------------------------------------
@@ -880,6 +922,7 @@ if Gtk is not None and GObject is not None:
                     self.emit("active-tab-changed", tab)
                 except Exception:
                     logger.debug("_add_tab: emit active-tab-changed failed", exc_info=True)
+                self._focus_editor_soon()
             self._update_header()
 
         def _on_page_reordered(self, *args):
@@ -919,6 +962,13 @@ if Gtk is not None and GObject is not None:
                 except Exception:
                     logger.debug("switch page emit failed", exc_info=True)
                 self._update_header()
+                try:
+                    # Already in an idle callback, so focus directly:
+                    # mouse tab clicks and programmatic page switches
+                    # land in the newly active editor.
+                    self.focus_active_editor()
+                except Exception:
+                    logger.debug("switch page focus failed", exc_info=True)
                 return False
 
             try:
