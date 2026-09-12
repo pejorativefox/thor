@@ -7,6 +7,42 @@ import re
 import subprocess
 import sys
 
+# Repo path baked in by ./install.sh so `import thor` works without a pip
+# install (some systems ship python without pip). Empty in the checkout.
+_THOR_BAKED_SRC = ""
+
+
+def _ensure_thor_importable() -> None:
+    """Prepend the Thor checkout root to sys.path if `thor` is unimportable."""
+    try:
+        import thor  # noqa: F401
+        return
+    except ImportError:
+        pass
+    candidates = []
+    try:
+        candidates.append(os.path.dirname(os.path.realpath(__file__)))
+    except Exception:
+        pass
+    for cand in (os.environ.get("THOR_SRC_DIR") or "", _THOR_BAKED_SRC,
+                 os.path.expanduser("~/repos/thor")):
+        if cand:
+            candidates.append(cand)
+    for cand in candidates:
+        if cand and os.path.isfile(os.path.join(cand, "thor", "app.py")):
+            if cand not in sys.path:
+                sys.path.insert(0, cand)
+            return
+
+
+def _thor_import_error(prog: str) -> int:
+    print(f"{prog}: thor package not found; re-run ./install.sh from your "
+          "checkout or set THOR_SRC_DIR=/path/to/thor", file=sys.stderr)
+    return 1
+
+
+_ensure_thor_importable()
+
 USAGE = "usage: thor-open 'path/to/file.cs[:line[:col]]' [...]"
 
 
@@ -72,7 +108,7 @@ def open_location(path: str, line: int | None, col: int | None = None) -> int:
     # Forward into the live window when the file lives under an
     # already-open root (one window per folder): focus + open at line.
     try:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        _ensure_thor_importable()
         from thor import ipc as _ipc  # type: ignore
 
         live = _ipc.find_live_root_for_path(abs_path)
@@ -82,11 +118,6 @@ def open_location(path: str, line: int | None, col: int | None = None) -> int:
                 return 0
     except Exception:
         pass
-    finally:
-        try:
-            sys.path.remove(os.path.dirname(os.path.abspath(__file__)))
-        except ValueError:
-            pass
     # If file doesn't exist yet, still try — Thor will create tab
     thor_bin = os.path.join(os.path.dirname(__file__), "thor-cli")
     argv: list[str]
@@ -100,6 +131,12 @@ def open_location(path: str, line: int | None, col: int | None = None) -> int:
         else:
             argv.append(f"+{line}")
     argv.append(abs_path)
+    # Fail loudly instead of spawning a child that dies silently to DEVNULL.
+    _ensure_thor_importable()
+    try:
+        import thor  # noqa: F401
+    except ImportError:
+        return _thor_import_error("thor-open")
     try:
         subprocess.Popen(
             argv,

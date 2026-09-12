@@ -55,10 +55,33 @@ mkdir -p "$BIN_DIR"
 for bin in thor-open thor-code thor-cli; do
     if [ -f "$SRC_DIR/$bin" ]; then
         cp "$SRC_DIR/$bin" "$BIN_DIR/"
+        # Bake the checkout path into the installed copy so `import thor`
+        # works without a pip install (some systems ship python without
+        # pip). Repo files carry `_THOR_BAKED_SRC = ""`; the bootstrap in
+        # each launcher also honors $THOR_SRC_DIR and ~/repos/thor.
+        python3 - "$BIN_DIR/$bin" "$SRC_DIR" <<'EOF'
+import sys
+path, src = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    text = f.read()
+needle = '_THOR_BAKED_SRC = ""'
+if needle in text:
+    text = text.replace(needle, '_THOR_BAKED_SRC = "' + src + '"', 1)
+    with open(path, "w") as f:
+        f.write(text)
+EOF
         chmod +x "$BIN_DIR/$bin"
         echo "Installed $bin to $BIN_DIR"
     fi
 done
+# Smoke test: the installed launcher must find the thor package from
+# outside the checkout (this is what failed silently before).
+if (cd /tmp && python3 "$BIN_DIR/thor-cli" --help >/dev/null 2>&1); then
+    echo "Smoke test ok: thor-cli --help works outside the checkout"
+else
+    echo "WARNING: thor-cli --help failed outside the checkout;" \
+        "set THOR_SRC_DIR=$SRC_DIR or re-run ./install.sh" >&2
+fi
 # `thor` itself comes from `pip install -e .` (console_script thor.app:main).
 # Provide a PATH shim when it is missing so desktop Exec=thor and
 # _spawn_argv fallback keep working without pip install.

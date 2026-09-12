@@ -279,10 +279,33 @@ def _rgba_to_hex(rgba) -> str | None:
     except Exception:
         return None
 
+def _settings_schema_installed() -> bool:
+    """True when the editor GSettings schema exists.
+
+    ``Gio.Settings.new()`` aborts the process with a fatal
+    GLib-GIO-ERROR (uncatchable from Python) when the schema is
+    missing — e.g. ``org.x.editor`` on non-Mint systems. Always probe
+    via SettingsSchemaSource first."""
+    if Gio is None:
+        return False
+    try:
+        source = Gio.SettingsSchemaSource.get_default()
+        if source is None:
+            return False
+        return source.lookup(SCHEME_SETTINGS_SCHEMA, True) is not None
+    except Exception as e:
+        logger.debug(f"schema probe failed: {e!r}")
+        return False
+
 def current_scheme_id() -> str | None:
     """Current editor color-scheme id (GSettings), or None if unknown."""
     if Gio is None:
         return None
+    if not _settings_schema_installed():
+        # No xed/GSettings schema on this system (e.g. Arch/Omarchy):
+        # fall back to Thor's built-in default so the terminal still
+        # matches the editor instead of crashing at startup.
+        return ATOM_SCHEME_ID
     try:
         settings = Gio.Settings.new(SCHEME_SETTINGS_SCHEMA)
         scheme_id = settings.get_string(SCHEME_SETTINGS_KEY)
@@ -957,7 +980,7 @@ def attach(window) -> object | None:
     scheme_settings = None
     scheme_changed_id = None
     try:
-        if Gio is not None:
+        if Gio is not None and _settings_schema_installed():
             settings = Gio.Settings.new(SCHEME_SETTINGS_SCHEMA)
             scheme_settings = settings
 
@@ -1032,6 +1055,7 @@ __all__ = [
     "_resolve_shell_argv",
     "BASE_LABEL",
     "ATOM_ONE_DARK",
+    "_settings_schema_installed",
     "SCHEME_STYLE_MAP",
     "SCHEME_SETTINGS_SCHEMA",
     "SCHEME_SETTINGS_KEY",

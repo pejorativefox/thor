@@ -12,6 +12,42 @@ import os
 import subprocess
 import sys
 
+# Repo path baked in by ./install.sh so `import thor` works without a pip
+# install (some systems ship python without pip). Empty in the checkout.
+_THOR_BAKED_SRC = ""
+
+
+def _ensure_thor_importable() -> None:
+    """Prepend the Thor checkout root to sys.path if `thor` is unimportable."""
+    try:
+        import thor  # noqa: F401
+        return
+    except ImportError:
+        pass
+    candidates = []
+    try:
+        candidates.append(os.path.dirname(os.path.realpath(__file__)))
+    except Exception:
+        pass
+    for cand in (os.environ.get("THOR_SRC_DIR") or "", _THOR_BAKED_SRC,
+                 os.path.expanduser("~/repos/thor")):
+        if cand:
+            candidates.append(cand)
+    for cand in candidates:
+        if cand and os.path.isfile(os.path.join(cand, "thor", "app.py")):
+            if cand not in sys.path:
+                sys.path.insert(0, cand)
+            return
+
+
+def _thor_import_error(prog: str) -> int:
+    print(f"{prog}: thor package not found; re-run ./install.sh from your "
+          "checkout or set THOR_SRC_DIR=/path/to/thor", file=sys.stderr)
+    return 1
+
+
+_ensure_thor_importable()
+
 USAGE = "usage: thor-code [--new-window] [folder]"
 
 VERSION = "0.1.0"
@@ -37,7 +73,7 @@ def launch(target: str, extra_args: list[str] | None = None) -> int:
     # just exit 2 to DEVNULL. The owner presents its window.
     if not (extra_args and any(a in ("--new-window", "-n") for a in extra_args)):
         try:
-            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            _ensure_thor_importable()
             from thor import ipc as _ipc  # type: ignore
 
             if _ipc.is_root_live(target):
@@ -46,11 +82,6 @@ def launch(target: str, extra_args: list[str] | None = None) -> int:
                     return 0
         except Exception:
             pass
-        finally:
-            try:
-                sys.path.remove(os.path.dirname(os.path.abspath(__file__)))
-            except ValueError:
-                pass
     # Isolated processes: no pending-root handoff file anymore. Just
     # launch thor; the child takes the same-root lock or focuses the owner.
     # Launch thor (this process's thor-cli or installed thor)
@@ -58,6 +89,12 @@ def launch(target: str, extra_args: list[str] | None = None) -> int:
     if not os.path.isfile(thor_bin):
         thor_bin = "thor"
     argv = [*(extra_args or []), target]
+    # Fail loudly instead of spawning a child that dies silently to DEVNULL.
+    _ensure_thor_importable()
+    try:
+        import thor  # noqa: F401
+    except ImportError:
+        return _thor_import_error("thor-code")
     try:
         subprocess.Popen(
             [sys.executable, thor_bin, *argv] if os.path.isfile(thor_bin) and thor_bin.endswith("thor-cli") else [thor_bin, *argv],
