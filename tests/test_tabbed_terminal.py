@@ -27,8 +27,8 @@ def test_unique_label_accepts_set_and_tuple():
 
 
 def test_keybinding_new_close():
-    assert tabbedterminal.handle_global_key("t", True, True, False) == "new"
-    assert tabbedterminal.handle_global_key("T", True, True, False) == "new"
+    assert tabbedterminal.handle_global_key("t", True, False, True) == "new"
+    assert tabbedterminal.handle_global_key("T", True, False, True) == "new"
     assert tabbedterminal.handle_global_key("w", True, True, False) == "close"
     assert tabbedterminal.handle_global_key("W", True, True, False) == "close"
 
@@ -41,7 +41,9 @@ def test_keybinding_focus_backtick():
 def test_keybinding_rejects_wrong_modifiers():
     assert tabbedterminal.handle_global_key("t", False, True, False) is None
     assert tabbedterminal.handle_global_key("t", True, False, False) is None
+    assert tabbedterminal.handle_global_key("t", True, True, False) is None
     assert tabbedterminal.handle_global_key("t", True, True, True) is None
+    assert tabbedterminal.handle_global_key("t", False, False, True) is None
     assert tabbedterminal.handle_global_key("w", True, False, False) is None
     assert tabbedterminal.handle_global_key("grave", False, False, False) is None
     assert tabbedterminal.handle_global_key("grave", True, True, False) is None

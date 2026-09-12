@@ -23,6 +23,114 @@ from .document import ThorDocument, ThorTab
 from .keys import decode_key_event
 from .state import load_state as load_panel_state, save_state as save_panel_state
 
+#: Max entries kept in the per-window closed-document stack for Ctrl+Shift+T.
+CLOSED_HISTORY_LIMIT = 25
+
+
+def closed_entry_from_tab(tab) -> tuple | None:
+    """Capture a reopen entry ``(path, line, col)`` for *tab*, or None.
+
+    Only file-backed tabs are restorable (untitled/never-saved tabs have
+    no path, and contents are not snapshotted). Cursor falls back to
+    ``(-1, -1)`` (no jump) when the view/buffer is unavailable. Never
+    raises; headless-safe (plain ``str`` locations in tests work too).
+    """
+    try:
+        doc = tab.get_document()
+    except Exception:
+        logger.debug("closed entry: get_document failed", exc_info=True)
+        return None
+    try:
+        loc = doc.get_location()
+    except Exception:
+        loc = None
+        logger.debug("closed entry: get_location failed", exc_info=True)
+    path = None
+    try:
+        if loc is None:
+            path = None
+        elif isinstance(loc, str):
+            path = loc
+        elif hasattr(loc, "get_path"):
+            path = loc.get_path()
+        else:
+            path = None
+    except Exception:
+        logger.debug("closed entry: path resolve failed", exc_info=True)
+        path = None
+    if not path:
+        return None
+    line, col = -1, -1
+    try:
+        view = tab.get_view()
+        buf = view.get_buffer() if view is not None else None
+        if buf is not None:
+            it = buf.get_iter_at_mark(buf.get_insert())
+            line = int(it.get_line())
+            try:
+                col = int(it.get_line_offset())
+            except Exception:
+                col = -1
+    except Exception:
+        logger.debug("closed entry: cursor resolve failed", exc_info=True)
+        line, col = -1, -1
+    return (path, line, col)
+
+
+def push_closed_entry(stack: list, entry: tuple | None, limit: int = CLOSED_HISTORY_LIMIT) -> None:
+    """Append *entry* to *stack*, dropping oldest past *limit*. Never raises."""
+    try:
+        if entry is None:
+            return
+        stack.append(entry)
+        while len(stack) > max(1, int(limit)):
+            del stack[0]
+    except Exception:
+        logger.debug("push closed entry failed", exc_info=True)
+
+
+def pop_closed_entry(stack: list):
+    """Pop the most recent entry, or None when empty. Never raises."""
+    try:
+        if not stack:
+            return None
+        return stack.pop()
+    except Exception:
+        logger.debug("pop closed entry failed", exc_info=True)
+        return None
+
+
+def reopen_next_entry(stack: list, open_fn):
+    """Pop entries until *open_fn(path, line, col)* reopens one.
+
+    *open_fn* returns the reopened tab or None (missing file). Malformed
+    or empty-path entries are skipped. Empty stack returns None. Never
+    raises; headless-safe so fakes can drive it directly.
+    """
+    try:
+        while True:
+            entry = pop_closed_entry(stack)
+            if entry is None:
+                return None
+            try:
+                path, line, col = entry
+            except Exception:
+                logger.debug("reopen: bad entry %r", entry, exc_info=True)
+                continue
+            if not path:
+                continue
+            try:
+                tab = open_fn(path, int(line), int(col))
+            except Exception:
+                logger.debug("reopen: open_fn failed for %r", path, exc_info=True)
+                continue
+            if tab is None:
+                continue
+            return tab
+    except Exception:
+        logger.debug("reopen_next_entry failed", exc_info=True)
+        return None
+
 if Gtk is not None and GObject is not None:
 
     class ThorWindow(Gtk.ApplicationWindow):  # type: ignore[misc]
@@ -259,6 +367,8 @@ if Gtk is not None and GObject is not None:
                 pass
             # Track tabs
             self._tabs: list = []
+            # Per-window stack of (path, line, col) for Ctrl+Shift+T reopen.
+            self._closed_docs: list = []
             self._key_handlers: list = []
             # Document find bar; set by the find feature on attach.
             self._searchbar = None
@@ -777,6 +887,16 @@ if Gtk is not None and GObject is not None:
         def close_tab(self, tab) -> None:
             if tab is None:
                 return
+            # Remember file-backed tabs for Ctrl+Shift+T reopen (before
+            # destroy; untitled tabs have no path and are skipped). Never
+            # blocks the close on helper failure.
+            try:
+                push_closed_entry(
+                    getattr(self, "_closed_docs", []),
+                    closed_entry_from_tab(tab),
+                )
+            except Exception:
+                logger.debug("close_tab: closed history push failed", exc_info=True)
             # Drop from _tabs first so a remove_page failure (or the
             # page-removed resync below) can't leave a stale entry behind.
             try:
@@ -836,6 +956,32 @@ if Gtk is not None and GObject is not None:
         def close_tabs(self, tabs) -> None:
             for t in list(tabs):
                 self.close_tab(t)
+
+        def reopen_last_closed(self):
+            """Reopen the most recently closed file tab (Ctrl+Shift+T).
+
+            Pops entries until one reopens (missing files resolve to None
+            via ``open_file`` and are skipped); empty stack is a no-op
+            returning None. Unsaved edits are not restored — reopening
+            reads from disk. Never raises.
+            """
+            try:
+                stack = getattr(self, "_closed_docs", None)
+                if stack is None:
+                    return None
+
+                def _open(path, line, col):
+                    return self.open_file(
+                        path,
+                        line_pos=int(line),
+                        col_pos=int(col),
+                        jump_to=True,
+                    )
+
+                return reopen_next_entry(stack, _open)
+            except Exception:
+                logger.debug("reopen_last_closed failed", exc_info=True)
+                return None
 
         def set_active_tab(self, tab) -> None:
             n = self._notebook.get_n_pages()
@@ -1325,7 +1471,8 @@ if Gtk is not None and GObject is not None:
             # Single key router: window shortcuts first, then feature
             # handlers in registration order (panel_hider Ctrl+B/J/E,
             # fuzzy Ctrl+P, find Ctrl+F/G, palette Ctrl+Shift+P, terminal
-            # Ctrl+` and Ctrl+Shift+T/W, keybinds Ctrl+PageUp/Down &c).
+            # Ctrl+` and Ctrl+Alt+T / Ctrl+Shift+W, keybinds Ctrl+Shift+T,
+            # Ctrl+PageUp/Down &c).
             parts = decode_key_event(event)
             if parts is None:
                 return False

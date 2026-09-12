@@ -29,9 +29,13 @@ A standalone `GtkSourceView` editor that bakes modern comforts in-process (no li
    (`Shift+Alt+F`) and quick fixes (`Alt+Enter`).
 
 **Built-in terminal**
-- A terminal in the bottom panel, with tabs: `Ctrl+Shift+T` opens a
+- A terminal in the bottom panel, with tabs: `Ctrl+Alt+T` opens a
   new terminal tab, `Ctrl+Shift+W` closes one, `` Ctrl+` `` jumps focus
   to the terminal and back.
+
+**Reopen closed tabs**
+- `Ctrl+Shift+T` reopens the last closed document (repeat to restore
+  older ones), keeping its cursor position.
 
 **Less clutter**
 - `Ctrl+B` hides side and bottom panes for distraction-free editing,
@@ -105,7 +109,8 @@ via `./install.sh` to standard XDG directories:
 | `Ctrl+B` | Hide/show all panes (focus mode) |
 | `Ctrl+J` / `Ctrl+E` | Toggle bottom / side pane |
 | `Ctrl+PageUp` / `Ctrl+PageDown` | Previous / next tab |
-| `Ctrl+Shift+T` / `Ctrl+Shift+W` | New / close terminal tab |
+| `Ctrl+Shift+T` | Reopen last closed document |
+| `Ctrl+Alt+T` / `Ctrl+Shift+W` | New / close terminal tab |
 | `` Ctrl+` `` | Jump focus to the terminal and back |
 | `Ctrl+Space` | Code completions (C#) |
 | `F12` / `Shift+F12` | Go to definition / find references (C#) |

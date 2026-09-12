@@ -206,7 +206,7 @@ def handle_global_key(keyname: str, ctrl: bool, shift: bool, alt: bool) -> str |
     Returns "new" | "close" | "focus" | None. Pure logic, headless-testable.
     """
     name = (keyname or "").lower()
-    if ctrl and shift and not alt and name == "t":
+    if ctrl and not shift and alt and name == "t":
         return "new"
     if ctrl and shift and not alt and name == "w":
         return "close"
@@ -640,7 +640,7 @@ if Gtk is not None:
                 copy_item.connect("activate", lambda _m: self._copy(term))
                 paste_item = Gtk.MenuItem.new_with_label("Paste")
                 paste_item.connect("activate", lambda _m: self._paste(term))
-                new_item = Gtk.MenuItem.new_with_label("New Tab (Ctrl+Shift+T)")
+                new_item = Gtk.MenuItem.new_with_label("New Tab (Ctrl+Alt+T)")
                 new_item.connect("activate", lambda _m: self.new_terminal())
                 menu.append(copy_item)
                 menu.append(paste_item)
@@ -839,7 +839,7 @@ def attach(window) -> object | None:
     except Exception as e:
         logger.debug(f"initial terminal failed: {e!r}")
 
-    # -- window key handling (Ctrl+Shift+T/W, Ctrl+`) -------------------
+    # -- window key handling (Ctrl+Alt+T, Ctrl+Shift+W, Ctrl+`) -------------------
     def _new_terminal():
         if panel is not None:
             try:
@@ -931,7 +931,7 @@ def attach(window) -> object | None:
     def _handle_global(keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
         action = handle_global_key(keyname, ctrl, shift, alt)
         if action == "new":
-            logger.debug("key: Ctrl+Shift+T new-terminal")
+            logger.debug("key: Ctrl+Alt+T new-terminal")
             _new_terminal()
             return True
         if action == "close":

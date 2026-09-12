@@ -1,14 +1,16 @@
 # -*- coding: utf-8 -*-
-"""Thor keybinds — tab cycling, line copy/cut/paste, tab close.
+"""Thor keybinds — tab cycling, line copy/cut/paste, tab close/reopen.
 
 Key ownership (return True ONLY when handled, else False so the next
 window key-router handler runs — see ``window.register_key_handler``):
 
 - This module: Ctrl+PageUp/PageDown (tab cycle), Ctrl+C/X/V whole-line
   hijack (only when the focused editable view has NO selection), Ctrl+W
-  (close the active document tab — only when an editor is focused).
+  (close the active document tab — only when an editor is focused),
+  Ctrl+Shift+T (reopen last closed document — consumed even when the
+  history stack is empty).
 - panel_hider: Ctrl+B/J/E (panel toggles).
-- terminal: Ctrl+Shift+T (new tab), Ctrl+` (two-way focus/reveal),
+- terminal: Ctrl+Alt+T (new tab), Ctrl+` (two-way focus/reveal),
   Ctrl+Shift+W (close terminal tab — NOT window close).
 - fuzzy: Ctrl+P.  palette: Ctrl+Shift+P.  find: Ctrl+F, Ctrl+G(+Shift), F3.
 
@@ -196,12 +198,25 @@ def _handle_clipboard_key(lowered, view) -> bool:
 
 def handle_global_key(window, keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
     """Handle a window-level key. Returns True only when handled."""
+    lowered = (keyname or "").lower()
+    if ctrl and shift and not alt and lowered == "t":
+        # Ctrl+Shift+T reopens the last closed document (browser-style).
+        # Consumed even when the stack is empty so the key never falls
+        # through to another handler; Ctrl+Alt+T stays terminal-owned.
+        if window is None:
+            return True
+        try:
+            reopen = getattr(window, "reopen_last_closed", None)
+            if callable(reopen):
+                reopen()
+        except Exception as e:
+            logger.debug("reopen tab failed: %r", e, exc_info=True)
+        return True
     # Owned Ctrl-only keys below; everything else falls through (False)
     # so the owning feature handler runs. Returning True here would
     # swallow sibling keys.
     if not (ctrl and not shift and not alt):
         return False
-    lowered = (keyname or "").lower()
     if lowered == "w":
         # Ctrl+W closes the active document tab, but only when the focus
         # is in the editor — never from the terminal (which owns

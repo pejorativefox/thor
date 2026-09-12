@@ -18,8 +18,10 @@ for the keys it owns):
   so this quits exactly this window), and Ctrl+R (word-wrap toggle,
   declined when the terminal has focus).  Must never swallow the keys below.
 - fuzzy: Ctrl+P.  palette: Ctrl+Shift+P.  find: Ctrl+F, Ctrl+G(+Shift), F3.
-- panel_hider: Ctrl+B/J/E.  terminal: Ctrl+Shift+T/W, Ctrl+` (+Shift+W is
-  terminal close, not window close).
+- panel_hider: Ctrl+B/J/E.  terminal: Ctrl+Alt+T (new tab), Ctrl+Shift+W,
+  Ctrl+` (+Shift+W is
+  terminal close, not window close).  keybinds: Ctrl+Shift+T (reopen last
+  closed document).
 - keybinds: Ctrl+PageUp/Down, Ctrl+C/X/V line hijack, Ctrl+W (document tab
   close, only when an editor is focused), Ctrl+,.
 

@@ -176,7 +176,8 @@ def _toggle_side_panel(window) -> None:
 def _handle_global_key(window, keyname: str, ctrl: bool, shift: bool, alt: bool) -> bool:
     # Owned keys only: Ctrl+B/J/E without shift/alt. Everything else —
     # notably Ctrl+P (fuzzy), Ctrl+Shift+P (palette), Ctrl+, (keybinds),
-    # Ctrl+W (keybinds), Ctrl+Shift+T/W and Ctrl+` (terminal) — falls
+    # Ctrl+W / Ctrl+Shift+T (keybinds), Ctrl+Alt+T / Ctrl+Shift+W and
+    # Ctrl+` (terminal) — falls
     # through (False) so the owning handler runs.
     lowered = (keyname or "").lower()
     if ctrl and not shift and not alt and lowered == "b":
